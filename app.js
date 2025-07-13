@@ -527,56 +527,48 @@ generateCharacterBtn.addEventListener('click', async () => {
 });
 
 async function callImageGenerationApi(prompt) {
-    console.log('=== Hugging Face API 호출 시작 ===');
+    console.log('=== 이미지 생성 API 호출 시작 ===');
     console.log('프롬프트 길이:', prompt.length);
     console.log('프롬프트 내용 (처음 200자):', prompt.substring(0, 200) + '...');
     
     try {
-        console.log('API 요청 전송 중...');
-        const response = await fetch('https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell', {
+        console.log('서버 API 요청 전송 중...');
+        const response = await fetch('/api/generate-image', {
             method: 'POST',
             headers: {
-                'Authorization': 'Bearer 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',
-                'Content-Type': 'application/json',
-                'x-wait-for-model': 'true'
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                inputs: prompt
+                prompt: prompt
             })
         });
         
-        console.log('API 응답 상태:', response.status, response.statusText);
+        console.log('서버 API 응답 상태:', response.status, response.statusText);
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error('API 오류 응답:', errorText);
-            throw new Error(`Hugging Face API request failed with status ${response.status}: ${errorText}`);
+            console.error('서버 API 오류 응답:', errorText);
+            throw new Error(`Server API request failed with status ${response.status}: ${errorText}`);
         }
 
-        console.log('이미지 데이터 수신 중...');
-        const imageBuffer = await response.arrayBuffer();
-        console.log('수신된 이미지 버퍼 크기:', imageBuffer.byteLength, 'bytes');
+        console.log('서버 응답 데이터 수신 중...');
+        const responseData = await response.json();
+        console.log('서버 응답:', responseData);
         
-        if (imageBuffer.byteLength > 1000) {
-            console.log('이미지 base64 변환 시작...');
-            // 안전한 base64 변환 방식
-            const uint8Array = new Uint8Array(imageBuffer);
-            let binaryString = '';
-            for (let i = 0; i < uint8Array.length; i++) {
-                binaryString += String.fromCharCode(uint8Array[i]);
-            }
-            const base64Image = btoa(binaryString);
+        if (responseData.success && responseData.imageUrl) {
             console.log(`=== 이미지 생성 성공 ===`);
-            console.log(`이미지 크기: ${imageBuffer.byteLength} bytes`);
-            console.log(`Base64 길이: ${base64Image.length} characters`);
-            return `data:image/png;base64,${base64Image}`;
+            console.log(`모델: ${responseData.model}`);
+            return responseData.imageUrl;
         } else {
-            console.error('수신된 데이터가 너무 작음:', imageBuffer.byteLength, 'bytes');
-            throw new Error('Received data too small to be an image');
+            console.log('이미지 생성 실패, 플레이스홀더 사용');
+            if (responseData.message) {
+                console.log('서버 메시지:', responseData.message);
+            }
+            return responseData.imageUrl || `data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI1MTIiIGhlaWdodD0iNTEyIiB2aWV3Qm94PSIwIDAgNTEyIDUxMiI+PHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsbD0iI2ZmNjY2NiIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LWZhbWlseT0iQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMjQiIGZpbGw9IndoaXRlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkb21pbmFudC1iYXNlbGluZT0ibWlkZGxlIj5JbWFnZSBFcnJvcjwvdGV4dD48L3N2Zz4=`;
         }
 
     } catch (error) {
-        console.error("=== Hugging Face API 오류 ===:");
+        console.error("=== 이미지 생성 API 오류 ===");
         console.error('오류 타입:', error.name);
         console.error('오류 메시지:', error.message);
         console.error('전체 오류:', error);
