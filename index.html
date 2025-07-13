@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LEGENDS ARENA</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚔️</text></svg>">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header>
+        <div class="header-left">
+            <h1>🏆 LEGENDS ARENA</h1>
+        </div>
+        <nav class="header-nav">
+            <button id="show-ranking-btn" class="hidden">🏅 랭킹</button>
+            <button id="admin-btn" class="hidden">⚙️ 관리</button>
+            <button id="logout-btn" class="hidden">🚪 로그아웃</button>
+        </nav>
+    </header>
+
+    <main>
+        <!-- 로그인/회원가입 섹션 (초기 화면) -->
+        <section id="auth-section">
+            <h2>아이디로 로그인 또는 회원가입</h2>
+            <form id="auth-form">
+                <input type="text" id="id-input" placeholder="아이디" required>
+                <input type="password" id="password-input" placeholder="비밀번호 (6자리 이상)" required>
+                <div class="auth-buttons">
+                    <button type="button" id="login-btn">로그인</button>
+                    <button type="button" id="signup-btn">회원가입</button>
+                </div>
+            </form>
+        </section>
+
+        <!-- 앱 메인 콘텐츠 (로그인 후 표시) -->
+        <div id="app-content" class="hidden">
+            <!-- 캐릭터 카드 뷰 (메인 화면) -->
+            <section id="character-cards-section">
+                <h2>내 캐릭터들</h2>
+                <div id="character-cards-grid">
+                    <!-- 캐릭터 카드들과 생성 카드가 여기에 표시됩니다 -->
+                </div>
+            </section>
+            
+            <!-- 캐릭터 생성 섹션 (숨겨진 상태) -->
+            <section id="character-creation-section" class="hidden">
+                <div class="creation-header">
+                    <button id="back-to-cards-btn" class="back-btn">← 뒤로</button>
+                    <h2>새로운 캐릭터 생성</h2>
+                </div>
+                <form id="character-creation-form">
+                    <div class="form-group">
+                        <label for="char-name">캐릭터 이름:</label>
+                        <input type="text" id="char-name" name="char-name" placeholder="예: 강철의 성기사" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="char-concept">캐릭터 컨셉 (외형, 배경 이야기 등):</label>
+                        <textarea id="char-concept" name="char-concept" rows="4" placeholder="예: 은빛 갑옷을 입고 거대한 망치를 사용하는, 고대 왕국을 지키는 마지막 성기사." required></textarea>
+                    </div>
+                    <button type="button" id="generate-character-btn" class="btn btn-primary w-full">캐릭터 생성</button>
+                    <div id="generation-progress-container" class="hidden mt-4">
+                        <div class="progress-bar-container w-full bg-gray-700 rounded-full h-4">
+                            <div id="generation-progress-bar" class="bg-cyan-400 h-4 rounded-full text-xs text-center text-black font-bold" style="width: 0%">0%</div>
+                        </div>
+                    </div>
+                </form>
+                <div id="character-preview" class="hidden">
+                    <h3>생성된 캐릭터 미리보기</h3>
+                    <div id="loading-indicator" class="hidden">캐릭터를 생성중입니다...</div>
+                    <img id="char-image-preview" src="#" alt="캐릭터 이미지" class="hidden">
+                    <h4>스토리</h4>
+                    <p id="char-story-preview"></p>
+                    <h4>능력치</h4>
+                    <div id="char-stats-preview"></div>
+                    <button id="save-character-btn">이 캐릭터로 결정</button>
+                </div>
+            </section>
+            
+            <!-- 캐릭터 상세 정보 섹션 (숨겨진 상태) -->
+            <section id="character-detail-section" class="hidden">
+                <div class="detail-header">
+                    <button id="back-to-cards-from-detail-btn" class="back-btn">← 뒤로</button>
+                    <h2 id="detail-character-name">캐릭터 상세 정보</h2>
+                </div>
+                <div id="character-detail-content">
+                    <!-- 캐릭터 상세 정보가 여기에 표시됩니다 -->
+                </div>
+            </section>
+            
+            <!-- 관리자 섹션 (숨겨진 상태) -->
+            <section id="admin-section" class="hidden">
+                <div class="admin-header">
+                    <button id="back-to-cards-from-admin-btn" class="back-btn">← 뒤로</button>
+                    <h2>관리자 패널</h2>
+                </div>
+                <div class="admin-controls">
+                    <div class="admin-stats">
+                        <div class="stat-item">
+                            <span class="stat-label">총 캐릭터 수:</span>
+                            <span id="total-characters-count" class="stat-value">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">총 사용자 수:</span>
+                            <span id="total-users-count" class="stat-value">0</span>
+                        </div>
+                    </div>
+                    <div class="admin-actions">
+                        <button id="refresh-admin-data-btn" class="admin-btn">데이터 새로고침</button>
+                        <button id="export-data-btn" class="admin-btn">데이터 내보내기</button>
+                        <button id="migrate-characters-btn" class="admin-btn">캐릭터 마이그레이션</button>
+                    </div>
+                </div>
+                <div id="admin-character-list">
+                    <h3>모든 캐릭터 관리</h3>
+                    <div id="admin-characters-grid">
+                        <!-- 관리자용 캐릭터 카드들이 여기에 표시됩니다 -->
+                    </div>
+                </div>
+            </section>
+            
+            <!-- 전투 아레나 섹션 (숨겨진 상태) -->
+            <section id="battle-arena-section" class="hidden">
+                <div class="arena-header">
+                    <button id="back-to-cards-from-arena-btn" class="back-btn">← 뒤로</button>
+                    <h2>⚔️ 전투 아레나</h2>
+                </div>
+                
+                <!-- 아레나 캐릭터 선택 영역 -->
+                <div id="arena-character-selection">
+                    <h3>전투에 참여할 캐릭터를 선택하세요</h3>
+                    <div id="arena-characters-grid">
+                        <!-- 아레나용 캐릭터 카드들이 여기에 표시됩니다 -->
+                    </div>
+                </div>
+                
+                <!-- 전투 아레나 컨테이너 -->
+                <div id="arena" class="hidden">
+                    <div id="battle-arena-container" class="hidden">
+                        <div id="player-slot">
+                            <h3>내 캐릭터</h3>
+                            <div id="player-battle-card"></div>
+                        </div>
+                        <div id="vs-section">
+                            <h2>VS</h2>
+                        </div>
+                        <div id="opponent-slot">
+                            <h3>상대방</h3>
+                            <div id="opponent-battle-card"></div>
+                        </div>
+                    </div>
+                    
+                    <div id="battle-controls" class="hidden">
+                        <button id="find-opponent-btn" disabled>상대 찾기</button>
+                        <button id="start-battle-btn" class="hidden" disabled>전투 시작</button>
+                    </div>
+                </div>
+            </section>
+    
+            <!-- 매칭 화면 섹션 -->
+            <section id="matching-section" class="hidden">
+                <div class="matching-header">
+                    <button id="back-to-detail-from-matching-btn" class="back-btn">← 뒤로</button>
+                    <h2>매칭 완료!</h2>
+                    <p>당신의 상대가 결정되었습니다.</p>
+                </div>
+                <div id="matching-content">
+                    <!-- 매칭된 상대방 정보가 여기에 표시됩니다 -->
+                </div>
+                
+                <!-- 스킬 선택 섹션 -->
+                <div id="player-skill-selection" class="hidden">
+                    <h4>전투에 사용할 스킬을 선택하세요 (2개)</h4>
+                    <div id="battle-guide-text">스킬을 2개 선택하면 전투를 시작할 수 있습니다.</div>
+                    <div id="skill-choices-container">
+                        <!-- 스킬 선택 버튼들이 여기에 표시됩니다 -->
+                    </div>
+                    <button id="start-battle-btn" class="start-battle-btn hidden" disabled>전투 시작</button>
+                </div>
+            </section>
+            
+            <!-- 전투 화면 섹션 -->
+            <section id="battle-section" class="hidden">
+                <div class="battle-header">
+                    <h2>⚔️ 전투 진행 중 ⚔️</h2>
+                    <p>치열한 전투가 벌어지고 있습니다!</p>
+                </div>
+                <div id="battle-content">
+                    <!-- 전투 진행 내용이 여기에 표시됩니다 -->
+                </div>
+                
+                <!-- 새로운 전투 게이지 바 -->
+                <div id="new-battle-gauge-container" class="hidden">
+                    <div class="gauge-header">
+                        <h3>⚔️ 전투 진행도</h3>
+                        <span id="gauge-percentage">0%</span>
+                    </div>
+                    <div class="gauge-bar-wrapper">
+                        <div id="new-battle-gauge-bar" class="gauge-bar">
+                            <div class="gauge-fill"></div>
+                            <div class="gauge-glow"></div>
+                        </div>
+                    </div>
+                    <div class="gauge-status">
+                        <span id="gauge-status-text">전투 준비 중...</span>
+                    </div>
+                </div>
+
+
+
+                <div class="battle-actions">
+                    <button id="back-to-matching-btn">돌아가기</button>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <div id="ranking-modal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-btn">&times;</span>
+            <h2>캐릭터 랭킹 (TOP 10)</h2>
+            <div id="ranking-list">
+                <!-- 랭킹 정보가 여기에 표시됩니다. -->
+            </div>
+        </div>
+    </div>
+
+    <!-- 랭킹 캐릭터 상세 정보 모달 -->
+    <div id="ranking-character-detail-modal" class="modal hidden">
+        <div class="modal-content large">
+            <span class="close-btn">&times;</span>
+            <div id="ranking-character-detail-content">
+                <!-- 캐릭터 상세 정보가 여기에 표시됩니다 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- 스킬 정보 모달 -->
+    <div id="skill-modal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-btn">&times;</span>
+            <h2 id="skill-modal-char-name">캐릭터 스킬 정보</h2>
+            <div id="skill-list">
+                <!-- 스킬 정보가 여기에 동적으로 추가됩니다. -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Novel Log Modal -->
+    <div id="novel-log-modal" class="modal hidden">
+        <div class="modal-content large">
+            <span class="close-btn">&times;</span>
+            <h3>전투 스토리 로그</h3>
+            <div id="novel-log-content-container">
+                <div id="novel-log-content"></div>
+                <div id="battle-image-container" class="hidden">
+                    <div class="loader"></div>
+                    <img id="generated-battle-image" src="" alt="AI Generated Battle Scene">
+                </div>
+            </div>
+            <button id="generate-battle-image-btn" class="hidden">이 장면, 이미지로 생성</button>
+        </div>
+    </div>
+
+    <!-- 상대방 캐릭터 상세 정보 모달 -->
+    <div id="opponent-modal" class="opponent-modal">
+        <div class="opponent-modal-content">
+            <span class="opponent-close">&times;</span>
+            <div class="opponent-modal-header">
+                <div class="opponent-image-container">
+                    <img id="opponent-modal-image" src="" alt="상대방 캐릭터">
+                </div>
+                <div class="opponent-basic-info">
+                    <h2 id="opponent-modal-name">캐릭터 이름</h2>
+                    <div class="opponent-class" id="opponent-modal-class">클래스</div>
+                </div>
+            </div>
+            
+            <div class="opponent-tabs">
+                <button class="opponent-tab active" data-tab="stats">능력치</button>
+                <button class="opponent-tab" data-tab="skills">스킬</button>
+                <button class="opponent-tab" data-tab="story">스토리</button>
+                <button class="opponent-tab" data-tab="battles">전투 기록</button>
+            </div>
+            
+            <div class="opponent-tab-content">
+                <div id="opponent-stats-tab" class="opponent-tab-panel active">
+                    <div class="opponent-stats-grid">
+                        <div class="opponent-stat-card">
+                            <div class="opponent-stat-label">승리</div>
+                            <div class="opponent-stat-value" id="opponent-modal-wins">0</div>
+                        </div>
+                        <div class="opponent-stat-card">
+                            <div class="opponent-stat-label">패배</div>
+                            <div class="opponent-stat-value" id="opponent-modal-losses">0</div>
+                        </div>
+                        <div class="opponent-stat-card">
+                            <div class="opponent-stat-label">공격력</div>
+                            <div class="opponent-stat-value" id="opponent-modal-attack">0</div>
+                        </div>
+                        <div class="opponent-stat-card">
+                            <div class="opponent-stat-label">방어력</div>
+                            <div class="opponent-stat-value" id="opponent-modal-defense">0</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="opponent-skills-tab" class="opponent-tab-panel">
+                    <div class="opponent-skills-list" id="opponent-modal-skills">
+                        <!-- 스킬 정보가 여기에 표시됩니다 -->
+                    </div>
+                </div>
+                
+                <div id="opponent-story-tab" class="opponent-tab-panel">
+                    <div class="opponent-story-content" id="opponent-modal-story">
+                        <!-- 스토리가 여기에 표시됩니다 -->
+                    </div>
+                </div>
+                
+                <div id="opponent-battles-tab" class="opponent-tab-panel">
+                    <div class="opponent-battle-history" id="opponent-modal-battles">
+                        <!-- 전투 기록이 여기에 표시됩니다 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <div class="footer-content">
+            <p>&copy; 2024 AI Character Battle. All rights reserved.</p>
+            <div class="creators">
+                <span class="creators-label">Developed by:</span>
+                <span class="creator-names">G.I • YH • JM • JY</span>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Firebase SDK (v9) is now imported as modules in app.js -->
+        <script>
+        (function() {
+            const script = document.createElement('script');
+            script.type = 'module';
+            script.src = `app.js?v=${new Date().getTime()}`;
+            document.body.appendChild(script);
+        })();
+    </script>
+</body>
+</html>
