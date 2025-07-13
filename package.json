@@ -1,0 +1,30 @@
+{
+  "name": "character-battle",
+  "version": "1.0.0",
+  "description": "AI Character Battle Game",
+  "main": "app.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "npm install",
+    "dev": "netlify dev",
+    "deploy": "netlify deploy",
+    "deploy:prod": "netlify deploy --prod",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "axios": "^1.10.0",
+    "craiyon": "^2.0.0",
+    "dotenv": "^17.2.0",
+    "express": "^4.19.2",
+    "selfsigned": "latest",
+    "serverless-http": "^3.2.0"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1",
+    "netlify-cli": "^17.0.0"
+  }
+}
