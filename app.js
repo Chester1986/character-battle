@@ -5826,7 +5826,7 @@ async function upgradeSkill(characterId, skillType, skillIndex) {
     console.log('🔧 [DEBUG] Luna 확인:', { userLuna, cost });
     if (userLuna < cost) {
         console.log('🔧 [DEBUG] Luna 부족으로 중단');
-        alert(`루나가 부족합니다. 필요한 루나: ${cost}, 보유 루나: ${userLuna}`);
+        alert(`스킬 업그레이드\n\n루나가 부족합니다. 필요한 루나: ${cost}, 보유 루나: ${userLuna}`);
         return;
     }
     
@@ -5937,7 +5937,7 @@ async function addNewSkill(characterId, skillType) {
     
     if (userLuna < cost) {
         console.log('루나 부족으로 함수 종료');
-        alert(`루나가 부족합니다. 필요한 루나: ${cost}, 보유 루나: ${userLuna}`);
+        alert(`새로운 스킬추가\n\n루나가 부족합니다. 필요한 루나: ${cost}, 보유 루나: ${userLuna}`);
         return;
     }
     
