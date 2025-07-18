@@ -347,25 +347,12 @@ signupBtn.addEventListener('click', async () => {
         return;
     }
     
-    // 중복 아이디 체크 (대소문자 구분 없음)
-    try {
-        const usersRef = collection(db, 'users');
-        const usersSnapshot = await getDocs(usersRef);
-        
-        for (const userDoc of usersSnapshot.docs) {
-            const userData = userDoc.data();
-            if (userData.userId && userData.userId.toLowerCase() === id.toLowerCase()) {
-                alert('이미 사용 중인 아이디입니다. (대소문자 구분 없음)');
-                return;
-            }
-        }
-    } catch (error) {
-        console.error('중복 아이디 체크 오류:', error);
-        alert('아이디 중복 확인 중 오류가 발생했습니다.');
-        return;
-    }
-    
+    // 중복 아이디 체크를 위해 이메일 생성 후 Firebase Auth로 확인
     const email = await createEmailFromId(id);
+    if (!email) return;
+    
+    // Firebase Auth에서 이메일 중복 확인은 createUserWithEmailAndPassword에서 자동으로 처리됨
+    // 별도의 중복 체크 없이 바로 계정 생성 시도
     if (!email) return;
 
     try {
@@ -847,6 +834,9 @@ function createCharacterCard(character, type) {
 // 캐릭터 상세 정보 표시
 async function showCharacterDetail(character) {
     console.log('showCharacterDetail 호출됨, 캐릭터 ID:', character.id);
+    
+    // 페이지 상단으로 스크롤
+    window.scrollTo(0, 0);
     
     // Firebase에서 최신 캐릭터 데이터 가져오기
     let latestCharacter = character;
@@ -1485,6 +1475,9 @@ async function showOpponentModal(character, battles) {
     console.log('showOpponentModal 호출됨, 캐릭터 데이터:', character);
     console.log('origin_story 값:', character.origin_story);
     console.log('story 값:', character.story);
+    
+    // 페이지 상단으로 스크롤
+    window.scrollTo(0, 0);
     
     // Firebase에서 최신 캐릭터 데이터 가져오기
     let latestCharacter = character;
@@ -4574,6 +4567,9 @@ async function loadRanking() {
 
 async function showRankingCharacterDetails(character) {
     try {
+        // 페이지 상단으로 스크롤
+        window.scrollTo(0, 0);
+        
         // Firebase에서 최신 캐릭터 데이터 가져오기 (업데이트된 스킬 반영)
         let fullCharacterData = character;
         
