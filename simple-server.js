@@ -1,13 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-require('dotenv').config({ debug: true });
-
-// Debug: Check if HF_TOKEN is loaded correctly
-console.log('=== Environment Variables Debug ===');
-console.log('HF_TOKEN loaded:', process.env.HF_TOKEN ? `${process.env.HF_TOKEN.substring(0, 10)}...` : 'NOT FOUND');
-console.log('PORT loaded:', process.env.PORT || 'NOT FOUND');
-console.log('=====================================');
+require('dotenv').config();
 
 const server = http.createServer(async (req, res) => {
     console.log(`Request: ${req.method} ${req.url}`);

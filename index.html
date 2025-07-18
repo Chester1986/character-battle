@@ -13,6 +13,14 @@
         <div class="header-left">
             <h1>🏆 LEGENDS ARENA</h1>
         </div>
+        <div class="header-center">
+            <div id="luna-display" class="luna-display hidden">
+                <span class="luna-icon">🌙</span>
+                <span class="luna-text">루나</span>
+                <span id="luna-amount" class="luna-amount">0</span>
+                <button id="refresh-luna-btn" class="refresh-luna-btn" title="루나 새로고침">🔄</button>
+            </div>
+        </div>
         <nav class="header-nav">
             <button id="show-ranking-btn" class="hidden">🏅 랭킹</button>
             <button id="admin-btn" class="hidden">⚙️ 관리</button>
@@ -110,6 +118,27 @@
                         <button id="refresh-admin-data-btn" class="admin-btn">데이터 새로고침</button>
                         <button id="export-data-btn" class="admin-btn">데이터 내보내기</button>
                         <button id="migrate-characters-btn" class="admin-btn">캐릭터 마이그레이션</button>
+                        <div class="luna-admin-section">
+                            <h4>🌙 루나 관리</h4>
+                            <div class="user-search-section">
+                                <input type="text" id="user-search-input" placeholder="사용자 아이디 검색..." class="user-search-input">
+                                <button id="search-users-btn" class="admin-btn">검색</button>
+                            </div>
+                            <div id="user-search-results" class="user-search-results hidden">
+                                <!-- 검색된 사용자 목록이 여기에 표시됩니다 -->
+                            </div>
+                            <div class="luna-admin-controls hidden" id="luna-management-controls">
+                                <div class="selected-user-info">
+                                    <h5>선택된 사용자: <span id="selected-user-id"></span></h5>
+                                    <p>현재 루나: <span id="selected-user-luna">0</span></p>
+                                </div>
+                                <div class="luna-action-controls">
+                                    <input type="number" id="luna-amount-input" placeholder="루나 수량" min="1" value="100">
+                                    <button id="add-luna-btn" class="admin-btn luna-btn add">루나 추가</button>
+                                    <button id="subtract-luna-btn" class="admin-btn luna-btn subtract">루나 감소</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div id="admin-character-list">
@@ -209,9 +238,7 @@
 
 
 
-                <div class="battle-actions">
-                    <button id="back-to-matching-btn">돌아가기</button>
-                </div>
+
             </section>
         </div>
     </main>

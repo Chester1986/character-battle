@@ -3,7 +3,7 @@
 // ------------------------------------------------------------------
 import { initializeApp } from "https://www.gstatic.com/firebasejs/9.15.0/firebase-app.js";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.15.0/firebase-auth.js";
-import { getFirestore, doc, setDoc, addDoc, collection, getDocs, getDoc, runTransaction, query, where, limit, orderBy, collectionGroup, deleteDoc, writeBatch } from "https://www.gstatic.com/firebasejs/9.15.0/firebase-firestore.js";
+import { getFirestore, doc, setDoc, addDoc, collection, getDocs, getDoc, runTransaction, query, where, limit, orderBy, collectionGroup, deleteDoc, writeBatch, updateDoc } from "https://www.gstatic.com/firebasejs/9.15.0/firebase-firestore.js";
 import { GoogleGenerativeAI } from "https://esm.run/@google/generative-ai";
 
 // --- CONFIGURATION ---
@@ -47,6 +47,7 @@ let opponentCharacterForBattle = null;
 let selectedCharacterCard = null;
 let selectedSkills = [];
 let allCharactersCache = []; // Cache for opponent finding
+let userLuna = 0; // 사용자의 루나 잔액
 
 // --- DOM ELEMENTS ---
 const authSection = document.getElementById('auth-section');
@@ -85,7 +86,7 @@ const backToDetailFromMatchingBtn = document.getElementById('back-to-detail-from
 // 전투 화면 관련 DOM 요소들
 const battleSection = document.getElementById('battle-section');
 const battleContent = document.getElementById('battle-content');
-const backToMatchingBtn = document.getElementById('back-to-matching-btn');
+// const backToMatchingBtn = document.getElementById('back-to-matching-btn'); // 제거됨
 
 // Novel Log & Image Generation
 // const showNovelLogBtn = document.getElementById('show-novel-log-btn'); // Removed - novel now shows automatically
@@ -227,12 +228,15 @@ async function generateWithFallback(prompt, maxRetriesPerModel = 2) {
             } catch (error) {
                 console.warn(`❌ ${modelName} attempt ${attempt} failed:`, error.message);
                 
-                // 토큰 한도 초과나 특정 오류인 경우 즉시 다음 모델로
-                if (error.message.includes('quota') || 
+                // 500 내부 서버 오류, 토큰 한도 초과나 특정 오류인 경우 즉시 다음 모델로
+                if (error.message.includes('500') ||
+                    error.message.includes('Internal Server Error') ||
+                    error.message.includes('internal error') ||
+                    error.message.includes('quota') || 
                     error.message.includes('limit') || 
                     error.message.includes('RESOURCE_EXHAUSTED') ||
                     error.message.includes('RATE_LIMIT_EXCEEDED')) {
-                    console.log(`🔄 Token/Rate limit reached for ${modelName}, switching to next model`);
+                    console.log(`🔄 Server error or limit reached for ${modelName}, switching to next model`);
                     updateModelStatus(modelName, 'failed');
                     break; // 다음 모델로 즉시 전환
                 }
@@ -291,15 +295,40 @@ function showView(view) {
 }
 
 // --- AUTHENTICATION ---
-onAuthStateChanged(auth, (user) => {
+onAuthStateChanged(auth, async (user) => {
     currentUser = user;
     if (user) {
+        // 사용자 문서가 존재하지 않으면 생성
+        try {
+            const userDocRef = doc(db, 'users', user.uid);
+            const userDoc = await getDoc(userDocRef);
+            
+            if (!userDoc.exists()) {
+                await setDoc(userDocRef, {
+                    uid: user.uid,
+                    email: user.email,
+                    createdAt: new Date().toISOString(),
+                    lastLoginAt: new Date().toISOString()
+                });
+                console.log('새 사용자 문서 생성됨:', user.uid);
+            } else {
+                // 기존 사용자의 마지막 로그인 시간 업데이트
+                await updateDoc(userDocRef, {
+                    lastLoginAt: new Date().toISOString()
+                });
+            }
+        } catch (error) {
+            console.error('사용자 문서 처리 오류:', error);
+        }
+        
         logoutBtn.classList.remove('hidden');
         showRankingBtn.classList.remove('hidden');
         adminBtn.classList.remove('hidden');
         showView('character-cards');
         loadUserCharacters();
         fetchAllCharacters(); // Cache all characters for opponent finding
+        await loadUserLuna(); // 루나 잔액 로드
+        initializeLunaDisplay(); // 루나 디스플레이 초기화
     } else {
         logoutBtn.classList.add('hidden');
         showRankingBtn.classList.add('hidden');
@@ -317,17 +346,48 @@ signupBtn.addEventListener('click', async () => {
         alert('아이디를 입력하고, 비밀번호를 6자리 이상 설정해주세요.');
         return;
     }
+    
+    // 중복 아이디 체크 (대소문자 구분 없음)
+    try {
+        const usersRef = collection(db, 'users');
+        const usersSnapshot = await getDocs(usersRef);
+        
+        for (const userDoc of usersSnapshot.docs) {
+            const userData = userDoc.data();
+            if (userData.userId && userData.userId.toLowerCase() === id.toLowerCase()) {
+                alert('이미 사용 중인 아이디입니다. (대소문자 구분 없음)');
+                return;
+            }
+        }
+    } catch (error) {
+        console.error('중복 아이디 체크 오류:', error);
+        alert('아이디 중복 확인 중 오류가 발생했습니다.');
+        return;
+    }
+    
     const email = await createEmailFromId(id);
     if (!email) return;
 
-    createUserWithEmailAndPassword(auth, email, password)
-        .catch((error) => {
-            if (error.code === 'auth/email-already-in-use') {
-                alert('이미 사용 중인 아이디입니다.');
-            } else {
-                alert(`회원가입 실패: ${error.code}`);
-            }
+    try {
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
+        
+        // 사용자 정보를 Firestore에 저장
+        await setDoc(doc(db, 'users', user.uid), {
+            userId: id,
+            email: email,
+            luna: 0, // 초기 루나 없음
+            createdAt: new Date().toISOString()
         });
+        
+        alert('회원가입이 완료되었습니다!');
+    } catch (error) {
+        if (error.code === 'auth/email-already-in-use') {
+            alert('이미 사용 중인 아이디입니다.');
+        } else {
+            alert(`회원가입 실패: ${error.code}`);
+        }
+    }
 });
 
 loginBtn.addEventListener('click', async () => {
@@ -786,10 +846,28 @@ function createCharacterCard(character, type) {
 
 // 캐릭터 상세 정보 표시
 async function showCharacterDetail(character) {
-    detailCharacterName.textContent = character.name;
+    console.log('showCharacterDetail 호출됨, 캐릭터 ID:', character.id);
     
-    const wins = character.wins || 0;
-    const losses = character.losses || 0;
+    // Firebase에서 최신 캐릭터 데이터 가져오기
+    let latestCharacter = character;
+    try {
+        const characterRef = doc(db, 'characters', character.id);
+        const characterSnap = await getDoc(characterRef);
+        if (characterSnap.exists()) {
+            latestCharacter = { id: characterSnap.id, ...characterSnap.data() };
+            console.log('Firebase에서 최신 캐릭터 데이터 가져옴:', latestCharacter.name);
+        } else {
+            console.log('Firebase에서 캐릭터를 찾을 수 없음, 캐시된 데이터 사용');
+        }
+    } catch (error) {
+        console.error('Firebase에서 캐릭터 데이터 가져오기 실패:', error);
+        console.log('캐시된 데이터 사용');
+    }
+    
+    detailCharacterName.textContent = latestCharacter.name;
+    
+    const wins = latestCharacter.wins || 0;
+    const losses = latestCharacter.losses || 0;
     const totalBattles = wins + losses;
     const winRate = totalBattles > 0 ? Math.round((wins / totalBattles) * 100) : 0;
     
@@ -803,7 +881,7 @@ async function showCharacterDetail(character) {
             if (aWinRate !== bWinRate) return bWinRate - aWinRate;
             return (b.wins || 0) - (a.wins || 0);
         });
-        const rank = sortedCharacters.findIndex(c => c.id === character.id) + 1;
+        const rank = sortedCharacters.findIndex(c => c.id === latestCharacter.id) + 1;
         characterRank = rank > 0 ? `${rank}위 / ${sortedCharacters.length}명` : '순위 없음';
     } catch (error) {
         console.error('순위 계산 오류:', error);
@@ -811,18 +889,18 @@ async function showCharacterDetail(character) {
     }
     
     // 최근 전투 기록 가져오기
-    const recentBattles = await getRecentBattles(character.id);
+    const recentBattles = await getRecentBattles(latestCharacter.id);
     
     characterDetailContent.innerHTML = `
         <div class="character-detail-container">
             <!-- 캐릭터 이미지 섹션 -->
             <div class="character-detail-header">
-                <div class="character-image-container" onclick="openImageModal('${character.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image'}', '${character.name}')">
-                    <img src="${character.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image'}" alt="${character.name}" onerror="this.src='https://placehold.co/512x512/EEE/31343C.png?text=Error'">
+                <div class="character-image-container" onclick="openImageModal('${latestCharacter.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image'}', '${latestCharacter.name}')">
+                    <img src="${latestCharacter.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image'}" alt="${latestCharacter.name}" onerror="this.src='https://placehold.co/512x512/EEE/31343C.png?text=Error'">
                 </div>
                 <div class="character-basic-info">
-                    <h2>${character.name}</h2>
-                    <div class="character-class">${character.class || '정보 없음'}</div>
+                    <h2>${latestCharacter.name}</h2>
+                    <div class="character-class">${latestCharacter.class || '정보 없음'}</div>
                     <div class="character-rank">전체 순위: ${characterRank}</div>
                 </div>
             </div>
@@ -860,42 +938,61 @@ async function showCharacterDetail(character) {
                 <!-- 배경 이야기 탭 -->
                 <div id="story-tab" class="tab-panel active">
                     <div class="story-content">
-                        ${character.story || '스토리 정보가 없습니다.'}
+                        ${latestCharacter.story || '스토리 정보가 없습니다.'}
                     </div>
                 </div>
                 
                 <!-- 스킬 탭 -->
                 <div id="skills-tab" class="tab-panel">
-                    <div class="skills-list">
-                        ${character.attack_skills && character.attack_skills.length > 0 ? 
-                            character.attack_skills.map(skill => 
-                                `<div class="skill-card attack-skill">
-                                    <div class="skill-icon">⚔️</div>
-                                    <div class="skill-info">
-                                        <div class="skill-name">${skill.name || skill.skill_name}</div>
-                                        <div class="skill-description">${skill.description || skill.skill_description}</div>
-                                    </div>
-                                </div>`
-                            ).join('') : ''}
-                        ${character.defense_skills && character.defense_skills.length > 0 ? 
-                            character.defense_skills.map(skill => 
-                                `<div class="skill-card defense-skill">
-                                    <div class="skill-icon">🛡️</div>
-                                    <div class="skill-info">
-                                        <div class="skill-name">${skill.name || skill.skill_name}</div>
-                                        <div class="skill-description">${skill.description || skill.skill_description}</div>
-                                    </div>
-                                </div>`
-                            ).join('') : ''}
-                        ${(!character.attack_skills || character.attack_skills.length === 0) && (!character.defense_skills || character.defense_skills.length === 0) ? 
-                            '<div class="no-skills">등록된 스킬이 없습니다.</div>' : ''}
+                    <div class="skills-section">
+                        <div class="skills-category">
+                            <div class="skills-category-header">
+                                <h4>⚔️ 공격 스킬</h4>
+                                <button class="add-skill-btn" onclick="addNewSkill('${latestCharacter.id}', 'attack')" title="새로운 공격 스킬 추가 (100루나)">➕</button>
+                            </div>
+                            <div class="skills-list">
+                                ${latestCharacter.attack_skills && latestCharacter.attack_skills.length > 0 ? 
+                                    latestCharacter.attack_skills.map((skill, index) => 
+                                        `<div class="skill-card attack-skill">
+                                            <div class="skill-icon">⚔️</div>
+                                            <div class="skill-info">
+                                                <div class="skill-name">${skill.name || skill.skill_name}</div>
+                                                <div class="skill-description">${skill.description || skill.skill_description}</div>
+                                            </div>
+                                            <button class="upgrade-skill-btn" onclick="upgradeSkill('${latestCharacter.id}', 'attack', ${index})" title="스킬 업그레이드 (50루나)">⬆️</button>
+                                        </div>`
+                                    ).join('') : 
+                                    '<div class="no-skills">공격 스킬이 없습니다.</div>'}
+                            </div>
+                        </div>
+                        
+                        <div class="skills-category">
+                            <div class="skills-category-header">
+                                <h4>🛡️ 방어 스킬</h4>
+                                <button class="add-skill-btn" onclick="addNewSkill('${latestCharacter.id}', 'defense')" title="새로운 방어 스킬 추가 (100루나)">➕</button>
+                            </div>
+                            <div class="skills-list">
+                                ${latestCharacter.defense_skills && latestCharacter.defense_skills.length > 0 ? 
+                                    latestCharacter.defense_skills.map((skill, index) => 
+                                        `<div class="skill-card defense-skill">
+                                            <div class="skill-icon">🛡️</div>
+                                            <div class="skill-info">
+                                                <div class="skill-name">${skill.name || skill.skill_name}</div>
+                                                <div class="skill-description">${skill.description || skill.skill_description}</div>
+                                            </div>
+                                            <button class="upgrade-skill-btn" onclick="upgradeSkill('${latestCharacter.id}', 'defense', ${index})" title="스킬 업그레이드 (50루나)">⬆️</button>
+                                        </div>`
+                                    ).join('') : 
+                                    '<div class="no-skills">방어 스킬이 없습니다.</div>'}
+                            </div>
+                        </div>
                     </div>
                 </div>
                 
                 <!-- 탄생 스토리 탭 -->
                 <div id="origin-tab" class="tab-panel">
                     <div class="origin-story-content">
-                        ${character.origin_story || '이 캐릭터는 신비로운 힘에 의해 탄생했습니다. 그들의 기원은 고대의 전설 속에 숨겨져 있으며, 시간이 흐르면서 그 진실이 밝혀질 것입니다.'}
+                        ${latestCharacter.origin_story || '이 캐릭터는 신비로운 힘에 의해 탄생했습니다. 그들의 기원은 고대의 전설 속에 숨겨져 있으며, 시간이 흐르면서 그 진실이 밝혀질 것입니다.'}
                     </div>
                 </div>
                 
@@ -927,10 +1024,10 @@ async function showCharacterDetail(character) {
             
             <!-- 액션 버튼들 -->
             <div class="character-detail-actions">
-                <button class="action-btn battle-btn" onclick="startBattleFromDetail('${character.id}')">
+                <button class="action-btn battle-btn" onclick="startBattleFromDetail('${latestCharacter.id}')">
                     ⚔️ 전투 시작
                 </button>
-                <button class="action-btn delete-btn" onclick="deleteCharacterFromDetail('${character.id}', '${character.name}')">
+                <button class="action-btn delete-btn" onclick="deleteCharacterFromDetail('${latestCharacter.id}', '${latestCharacter.name}')">
                     🗑️ 삭제
                 </button>
             </div>
@@ -956,14 +1053,73 @@ async function startBattleFromDetail(characterId) {
     
     if (character) {
         console.log('캐릭터 찾음:', character.name);
-        playerCharacterForBattle = character;
         
-        // 상대방 찾기
+        // 플레이어 캐릭터의 최신 데이터를 Firebase에서 가져오기
+        try {
+            console.log('플레이어 캐릭터 최신 데이터 가져오는 중:', character.name);
+            const playerRef = await findCharacterRef(character.id);
+            if (playerRef) {
+                const playerDoc = await getDoc(playerRef);
+                if (playerDoc.exists()) {
+                    const latestPlayerData = { id: playerDoc.id, ...playerDoc.data() };
+                    playerCharacterForBattle = latestPlayerData;
+                    console.log('플레이어 최신 데이터 로드 완료:', latestPlayerData.name);
+                    console.log('플레이어 공격 스킬 수:', latestPlayerData.attack_skills?.length || 0);
+                    console.log('플레이어 방어 스킬 수:', latestPlayerData.defense_skills?.length || 0);
+                } else {
+                    console.log('플레이어 문서가 존재하지 않음, 캐시 데이터 사용');
+                    playerCharacterForBattle = character;
+                }
+            } else {
+                console.log('플레이어 참조를 찾을 수 없음, 캐시 데이터 사용');
+                playerCharacterForBattle = character;
+            }
+        } catch (error) {
+            console.error('플레이어 최신 데이터 가져오기 실패:', error);
+            console.log('캐시 데이터로 대체');
+            playerCharacterForBattle = character;
+        }
+        
+        // 상대방 찾기 - 자신의 캐릭터와 같은 사용자의 캐릭터 제외
         if (allCharactersCache.length > 1) {
-            const availableOpponents = allCharactersCache.filter(c => c.id !== character.id);
+            const availableOpponents = allCharactersCache.filter(c => 
+                c.id !== character.id && c.userId !== currentUser.uid
+            );
+            
+            if (availableOpponents.length === 0) {
+                alert('매칭 가능한 다른 사용자의 캐릭터가 없습니다.');
+                return;
+            }
+            
             const randomOpponent = availableOpponents[Math.floor(Math.random() * availableOpponents.length)];
-            opponentCharacterForBattle = randomOpponent;
-            console.log('상대방 선택됨:', randomOpponent.name);
+            
+            // 상대방의 최신 데이터를 Firebase에서 가져오기
+            try {
+                console.log('상대방 최신 데이터 가져오는 중:', randomOpponent.name);
+                const opponentRef = await findCharacterRef(randomOpponent.id);
+                if (opponentRef) {
+                    const opponentDoc = await getDoc(opponentRef);
+                    if (opponentDoc.exists()) {
+                        const latestOpponentData = { id: opponentDoc.id, ...opponentDoc.data() };
+                        opponentCharacterForBattle = latestOpponentData;
+                        console.log('상대방 최신 데이터 로드 완료:', latestOpponentData.name);
+                        console.log('상대방 공격 스킬 수:', latestOpponentData.attack_skills?.length || 0);
+                        console.log('상대방 방어 스킬 수:', latestOpponentData.defense_skills?.length || 0);
+                    } else {
+                        console.log('상대방 문서가 존재하지 않음, 캐시 데이터 사용');
+                        opponentCharacterForBattle = randomOpponent;
+                    }
+                } else {
+                    console.log('상대방 참조를 찾을 수 없음, 캐시 데이터 사용');
+                    opponentCharacterForBattle = randomOpponent;
+                }
+            } catch (error) {
+                console.error('상대방 최신 데이터 가져오기 실패:', error);
+                console.log('캐시 데이터로 대체');
+                opponentCharacterForBattle = randomOpponent;
+            }
+            
+            console.log('상대방 선택됨:', opponentCharacterForBattle.name);
             
             // 매칭 화면으로 이동
             showView('matching');
@@ -1207,12 +1363,7 @@ function startBattleScreen() {
     console.log('playerCharacterForBattle:', playerCharacterForBattle);
     console.log('opponentCharacterForBattle:', opponentCharacterForBattle);
     
-    // 돌아가기 버튼이 보이도록 설정
-    const backToMatchingBtn = document.getElementById('back-to-matching-btn');
-    if (backToMatchingBtn) {
-        backToMatchingBtn.style.display = 'block';
-        backToMatchingBtn.disabled = false;
-    }
+    // 돌아가기 버튼 제거됨
     
     // 전투 화면 내용 설정
     battleContent.innerHTML = `
@@ -1313,7 +1464,7 @@ async function showOpponentCharacterDetail(opponentId, opponentName) {
         
         // 상대방 캐릭터 정보를 새 창이나 모달로 표시
         console.log('모달 표시 중...');
-        showOpponentModal(opponentData, opponentBattles);
+        await showOpponentModal(opponentData, opponentBattles);
         console.log('모달 표시 완료');
         
     } catch (error) {
@@ -1323,10 +1474,26 @@ async function showOpponentCharacterDetail(opponentId, opponentName) {
 }
 
 // 상대방 캐릭터 정보 모달 표시
-function showOpponentModal(character, battles) {
+async function showOpponentModal(character, battles) {
     console.log('showOpponentModal 호출됨, 캐릭터 데이터:', character);
     console.log('origin_story 값:', character.origin_story);
     console.log('story 값:', character.story);
+    
+    // Firebase에서 최신 캐릭터 데이터 가져오기
+    let latestCharacter = character;
+    try {
+        const characterRef = doc(db, 'characters', character.id);
+        const characterSnap = await getDoc(characterRef);
+        if (characterSnap.exists()) {
+            latestCharacter = { id: characterSnap.id, ...characterSnap.data() };
+            console.log('Firebase에서 최신 캐릭터 데이터 가져옴:', latestCharacter.name);
+        } else {
+            console.log('Firebase에서 캐릭터를 찾을 수 없음, 캐시된 데이터 사용');
+        }
+    } catch (error) {
+        console.error('Firebase에서 캐릭터 데이터 가져오기 실패:', error);
+        console.log('캐시된 데이터 사용');
+    }
     
     // 기존 모달이 있다면 제거
     const existingModal = document.querySelector('.opponent-modal');
@@ -1342,26 +1509,26 @@ function showOpponentModal(character, battles) {
             <div class="opponent-modal-header">
                 <span class="opponent-close">&times;</span>
                 <div class="opponent-image-container">
-                    <img src="${character.imageUrl || 'https://placehold.co/200x200/333/FFF?text=?'}" 
-                         alt="${character.name}" 
+                    <img src="${latestCharacter.imageUrl || 'https://placehold.co/200x200/333/FFF?text=?'}" 
+                         alt="${latestCharacter.name}" 
                          class="character-image-clickable">
                 </div>
                 <div class="opponent-basic-info">
-                    <h2>${character.name}</h2>
-                    <p class="opponent-class">${character.class || '정보 없음'}</p>
+                    <h2>${latestCharacter.name}</h2>
+                    <p class="opponent-class">${latestCharacter.class || '정보 없음'}</p>
                 </div>
                 <div class="opponent-stats-grid">
                     <div class="opponent-stat-card">
                         <div class="opponent-stat-label">승리</div>
-                        <div class="opponent-stat-value">${character.wins || 0}</div>
+                        <div class="opponent-stat-value">${latestCharacter.wins || 0}</div>
                     </div>
                     <div class="opponent-stat-card">
                         <div class="opponent-stat-label">패배</div>
-                        <div class="opponent-stat-value">${character.losses || 0}</div>
+                        <div class="opponent-stat-value">${latestCharacter.losses || 0}</div>
                     </div>
                     <div class="opponent-stat-card">
                         <div class="opponent-stat-label">승률</div>
-                        <div class="opponent-stat-value">${calculateWinRate(character)}%</div>
+                        <div class="opponent-stat-value">${calculateWinRate(latestCharacter)}%</div>
                     </div>
                 </div>
             </div>
@@ -1375,8 +1542,8 @@ function showOpponentModal(character, battles) {
                 <!-- 스킬 탭 -->
                 <div id="opponent-skills-tab" class="opponent-tab-panel active">
                     <div class="opponent-skills-list">
-                        ${character.attack_skills && character.attack_skills.length > 0 ? 
-                            character.attack_skills.map(skill => 
+                        ${latestCharacter.attack_skills && latestCharacter.attack_skills.length > 0 ? 
+                            latestCharacter.attack_skills.map(skill => 
                                 `<div class="opponent-skill-card attack-skill">
                                     <div class="opponent-skill-icon">⚔️</div>
                                     <div class="opponent-skill-info">
@@ -1386,8 +1553,8 @@ function showOpponentModal(character, battles) {
                                 </div>`
                             ).join('') : ''
                         }
-                        ${character.defense_skills && character.defense_skills.length > 0 ? 
-                            character.defense_skills.map(skill => 
+                        ${latestCharacter.defense_skills && latestCharacter.defense_skills.length > 0 ? 
+                            latestCharacter.defense_skills.map(skill => 
                                 `<div class="opponent-skill-card defense-skill">
                                     <div class="opponent-skill-icon">🛡️</div>
                                     <div class="opponent-skill-info">
@@ -1397,8 +1564,8 @@ function showOpponentModal(character, battles) {
                                 </div>`
                             ).join('') : ''
                         }
-                        ${(!character.attack_skills || character.attack_skills.length === 0) && 
-                          (!character.defense_skills || character.defense_skills.length === 0) ? 
+                        ${(!latestCharacter.attack_skills || latestCharacter.attack_skills.length === 0) && 
+                          (!latestCharacter.defense_skills || latestCharacter.defense_skills.length === 0) ? 
                             '<div class="no-skills">표시할 스킬이 없습니다.</div>' : ''
                         }
                     </div>
@@ -1407,7 +1574,7 @@ function showOpponentModal(character, battles) {
                 <!-- 배경 스토리 탭 -->
                 <div id="opponent-story-tab" class="opponent-tab-panel">
                     <div class="opponent-story-content">
-                        ${character.origin_story || character.story || character.background || character.description || '이 캐릭터는 신비로운 힘에 의해 탄생했습니다. 그들의 과거는 베일에 싸여 있지만, 강력한 힘과 의지를 가지고 있습니다.'}
+                        ${latestCharacter.origin_story || latestCharacter.story || latestCharacter.background || latestCharacter.description || '이 캐릭터는 신비로운 힘에 의해 탄생했습니다. 그들의 과거는 베일에 싸여 있지만, 강력한 힘과 의지를 가지고 있습니다.'}
                     </div>
                 </div>
             </div>
@@ -1434,7 +1601,7 @@ function showOpponentModal(character, battles) {
     
     // 캐릭터 이미지 클릭 이벤트
     characterImage.addEventListener('click', () => {
-        openImageModal(character.imageUrl || 'https://placehold.co/200x200/333/FFF?text=?', character.name);
+        openImageModal(latestCharacter.imageUrl || 'https://placehold.co/200x200/333/FFF?text=?', latestCharacter.name);
     });
     
     // 모달 표시
@@ -1732,7 +1899,8 @@ function selectPlayerForBattle(character, cardElement) {
     cardElement.classList.add('selected');
     selectedCharacterCard = cardElement;
 
-    playerCharacterForBattle = character;
+    // 플레이어 캐릭터에 userId 정보 추가
+    playerCharacterForBattle = { ...character, userId: currentUser.uid };
     showView('battle');
     
     // 초기 상태로 리셋
@@ -1830,6 +1998,7 @@ function resetBattleArena() {
     }
     if (playerBattleCard) playerBattleCard.innerHTML = '';
     if (opponentBattleCard) opponentBattleCard.innerHTML = '';
+    const battleLog = document.getElementById('battle-log');
     if (battleLog) battleLog.classList.add('hidden');
     if (findOpponentBtn) findOpponentBtn.disabled = true;
     if (startBattleBtn) {
@@ -1990,11 +2159,12 @@ async function returnToMatchingAfterForfeit() {
     }
     
     try {
-        // 새로운 상대 찾기
-        const newOpponent = await findRandomOpponent(playerCharacterForBattle.id);
+        // 새로운 상대 찾기 (자기 자신과 같은 사용자의 캐릭터 제외)
+        const newOpponent = await findRandomOpponent();
         
         if (!newOpponent) {
             console.log('새로운 상대를 찾을 수 없어서 아레나로 돌아갑니다.');
+            alert('다른 사용자의 캐릭터를 찾을 수 없습니다.');
             loadCharactersForArena();
             showView('battle');
             return;
@@ -2514,6 +2684,119 @@ async function confirmBattleExit() {
     }
 }
 
+// 최근 상대 추적을 위한 전역 변수
+let recentOpponents = [];
+const MAX_RECENT_OPPONENTS = 5;
+
+// 최근 상대 회피 기반 상대 찾기 함수
+async function findRandomOpponent(playerCharacterId) {
+    console.log('최근 상대 회피 기반 상대 찾기 시작...');
+    
+    // 캐시가 비어있다면 새로고침
+    if (allCharactersCache.length === 0) {
+        await fetchAllCharacters();
+    }
+    
+    // 자신의 캐릭터와 같은 사용자의 캐릭터 제외
+    let availableOpponents = allCharactersCache.filter(c => 
+        c.id !== playerCharacterId && c.userId !== currentUser.uid
+    );
+    
+    if (availableOpponents.length === 0) {
+        console.log('매칭 가능한 다른 사용자의 캐릭터가 없습니다.');
+        return null;
+    }
+    
+    // 최근 상대 회피 기반 상대 선택
+    const selectedOpponent = selectOpponentWithWeights(availableOpponents, playerCharacterId);
+    
+    // 선택된 상대를 최근 상대 목록에 추가
+    addToRecentOpponents(selectedOpponent.id);
+    
+    // 상대방의 최신 데이터를 Firebase에서 가져오기
+    try {
+        console.log('상대방 최신 데이터 가져오는 중:', selectedOpponent.name);
+        const opponentRef = await findCharacterRef(selectedOpponent.id);
+        if (opponentRef) {
+            const opponentDoc = await getDoc(opponentRef);
+            if (opponentDoc.exists()) {
+                const latestOpponentData = { id: opponentDoc.id, ...opponentDoc.data() };
+                console.log('최근 상대 회피 매칭 완료:', latestOpponentData.name);
+                return latestOpponentData;
+            }
+        }
+    } catch (error) {
+        console.error('상대방 최신 데이터 가져오기 실패:', error);
+    }
+    
+    // 최신 데이터를 가져올 수 없으면 캐시 데이터 반환
+    return selectedOpponent;
+}
+
+// 최근 상대 회피 기반 상대 선택 함수
+function selectOpponentWithWeights(availableOpponents, playerCharacterId) {
+    // 최근 상대가 없거나 모든 상대가 최근 상대인 경우 랜덤 선택
+    if (recentOpponents.length === 0 || availableOpponents.length <= recentOpponents.length) {
+        const randomOpponent = availableOpponents[Math.floor(Math.random() * availableOpponents.length)];
+        console.log(`랜덤 매칭: ${randomOpponent.name}`);
+        return randomOpponent;
+    }
+    
+    // 각 상대에 대한 가중치 계산 (최근 상대 회피만 적용)
+    const weightedOpponents = availableOpponents.map(opponent => {
+        let weight = 1.0; // 기본 가중치
+        
+        // 최근 상대 페널티 (최근에 만난 상대일수록 낮은 가중치)
+        const recentIndex = recentOpponents.indexOf(opponent.id);
+        if (recentIndex !== -1) {
+            // 최근 순서에 따라 가중치 감소 (가장 최근 = 0.1, 그 다음 = 0.3, ...)
+            weight *= (0.1 + (recentIndex * 0.2));
+        }
+        
+        return { opponent, weight };
+    });
+    
+    // 가중치 기반 랜덤 선택
+    const totalWeight = weightedOpponents.reduce((sum, item) => sum + item.weight, 0);
+    let randomValue = Math.random() * totalWeight;
+    
+    for (const item of weightedOpponents) {
+        randomValue -= item.weight;
+        if (randomValue <= 0) {
+            console.log(`최근 상대 회피 매칭: ${item.opponent.name} (가중치: ${item.weight.toFixed(2)})`);
+            return item.opponent;
+        }
+    }
+    
+    // 예외 상황에서는 마지막 상대 반환
+    return weightedOpponents[weightedOpponents.length - 1].opponent;
+}
+
+// 최근 상대 목록에 추가
+function addToRecentOpponents(opponentId) {
+    // 이미 목록에 있다면 제거
+    const existingIndex = recentOpponents.indexOf(opponentId);
+    if (existingIndex !== -1) {
+        recentOpponents.splice(existingIndex, 1);
+    }
+    
+    // 맨 앞에 추가
+    recentOpponents.unshift(opponentId);
+    
+    // 최대 개수 유지
+    if (recentOpponents.length > MAX_RECENT_OPPONENTS) {
+        recentOpponents = recentOpponents.slice(0, MAX_RECENT_OPPONENTS);
+    }
+    
+    console.log('최근 상대 목록 업데이트:', recentOpponents);
+}
+
+// 최근 상대 목록 초기화 (선택적)
+function clearRecentOpponents() {
+    recentOpponents = [];
+    console.log('최근 상대 목록 초기화됨');
+}
+
 // 새로운 상대 매칭 함수
 async function matchNewOpponent() {
     console.log('새로운 상대 매칭 시작...');
@@ -2531,6 +2814,7 @@ async function matchNewOpponent() {
         
         if (!newOpponent) {
             console.log('새로운 상대를 찾을 수 없어서 아레나로 돌아갑니다.');
+            alert('매칭 가능한 다른 사용자의 캐릭터가 없습니다.');
             loadCharactersForArena();
             return;
         }
@@ -2542,7 +2826,7 @@ async function matchNewOpponent() {
         selectedSkills = [];
         
         // 매칭 화면 표시
-        showMatchedOpponentScreen(newOpponent);
+        showMatchedOpponentScreenFresh(newOpponent);
         
         console.log('새로운 상대 매칭 완료:', newOpponent.name);
         
@@ -2985,22 +3269,45 @@ async function startTurnBasedBattleNew() {
     
     console.log('게이지바 표시 완료');
     
-    // 상대방 스킬 랜덤 선택
-    const opponentSkills = getRandomSkills(opponentCharacterForBattle);
+    // 상대방 최신 데이터 가져오기
+    try {
+        console.log('상대방 최신 데이터 가져오는 중...', opponentCharacterForBattle.id);
+        // 캐시 새로고침
+        await fetchAllCharacters();
+        // 업데이트된 캐시에서 상대방 찾기
+        const latestOpponentData = allCharactersCache.find(c => c.id === opponentCharacterForBattle.id);
+        if (latestOpponentData) {
+            opponentCharacterForBattle = latestOpponentData;
+            console.log('상대방 최신 데이터 업데이트 완료:', opponentCharacterForBattle.name);
+        } else {
+            console.log('상대방 최신 데이터를 가져올 수 없어 캐시된 데이터 사용');
+        }
+    } catch (error) {
+        console.error('상대방 최신 데이터 가져오기 실패, 캐시된 데이터 사용:', error);
+    }
     
-    // 전투 데이터 준비
+    // 상대방 스킬 랜덤 선택 (최신 데이터 기반)
+    const opponentSkills = getRandomSkills(opponentCharacterForBattle);
+    console.log('상대방 선택된 스킬:', opponentSkills.map(s => s.name || s.skill_name));
+    
+    // 전투 데이터 준비 (전체 캐릭터 객체 포함)
     const battleData = {
         player: {
-            name: playerCharacterForBattle.name,
-            class: playerCharacterForBattle.class,
+            ...playerCharacterForBattle,
             skills: selectedSkills
         },
         opponent: {
-            name: opponentCharacterForBattle.name,
-            class: opponentCharacterForBattle.class,
+            ...opponentCharacterForBattle,
             skills: opponentSkills
         }
     };
+    
+    console.log('전투 데이터 준비 완료:', {
+        playerCreatedBy: battleData.player.createdBy,
+        opponentCreatedBy: battleData.opponent.createdBy,
+        playerName: battleData.player.name,
+        opponentName: battleData.opponent.name
+    });
     
     // 상대방 스킬 공개
     const opponentSkillsDiv = document.querySelector('.opponent-skills');
@@ -3056,6 +3363,10 @@ async function startTurnBasedBattleNew() {
     
     // 초기 대기 시간 단축
     await sleep(1000);
+    
+    // finalResult 변수를 함수 스코프에서 선언
+    let finalResult = null;
+    let isPlayerWin = false;
     
     try {
         // 미리 정의된 전투 메시지 배열
@@ -3148,14 +3459,14 @@ async function startTurnBasedBattleNew() {
         await sleep(2000);
         
         console.log('최종 판결 요청 중...');
-        const finalResult = await getFinalVerdict(battleData.player, battleData.opponent, battleTurns);
+        finalResult = await getFinalVerdict(battleData.player, battleData.opponent, battleTurns);
         console.log('최종 결과:', finalResult);
         
         // 최종 결과는 게이지 상태 텍스트로만 표시
         
         // 승부 결과에 따른 처리 (null 체크 추가)
         const playerName = playerCharacterForBattle?.name || battleData?.player?.name || 'Unknown';
-        const isPlayerWin = finalResult.winner_name === playerName;
+        isPlayerWin = finalResult.winner_name === playerName;
         
         if (gaugeStatusText) {
             if (isPlayerWin) {
@@ -3260,6 +3571,18 @@ async function startTurnBasedBattleNew() {
         }
         if (gaugePercentage) {
             gaugePercentage.textContent = '100%';
+        }
+        
+        // 게이지 100% 완료 후 루나 지급 알림 표시 (플레이어가 승리한 경우에만)
+        if (isPlayerWin) {
+            console.log('플레이어 승리 - 루나 지급 알림 표시 시도');
+            try {
+                // 루나 지급 처리
+                await awardLunaToCharacterOwner(playerCharacterForBattle.id || playerCharacterForBattle.character_id || playerCharacterForBattle.name);
+                console.log('루나 지급 완료');
+            } catch (error) {
+                console.error('루나 지급 실패:', error);
+            }
         }
         
         if (gaugeStatusText) {
@@ -3492,7 +3815,7 @@ async function updateWinsLosses(winnerId, loserId, battleData = null) {
             return;
         }
 
-        console.log('Firebase transaction 시작');
+        console.log('Firebase transaction 시작 - 승패기록과 전투기록 동시 저장');
         await runTransaction(db, async (transaction) => {
             const winnerDoc = await transaction.get(winnerRef);
             const loserDoc = await transaction.get(loserRef);
@@ -3509,20 +3832,63 @@ async function updateWinsLosses(winnerId, loserId, battleData = null) {
             console.log('승자 현재 승수:', currentWins, '-> 새 승수:', newWins);
             console.log('패자 현재 패수:', currentLosses, '-> 새 패수:', newLosses);
 
+            // 승패 기록 업데이트
             transaction.update(winnerRef, { wins: newWins });
             transaction.update(loserRef, { losses: newLosses });
+            
+            // 전투 기록도 트랜잭션 내에서 동시에 저장
+            if (battleData) {
+                console.log('전투 기록 저장 시작 (트랜잭션 내)');
+                const winnerData = { id: winnerId, ...battleData.winner };
+                const loserData = { id: loserId, ...battleData.loser };
+                
+                const battleRecord = {
+                    winnerId: winnerData.id,
+                    winnerName: winnerData.name,
+                    winnerImage: winnerData.imageUrl,
+                    loserId: loserData.id,
+                    loserName: loserData.name,
+                    loserImage: loserData.imageUrl,
+                    battleDate: new Date().toISOString(),
+                    playerSkills: battleData.playerSkills || [],
+                    opponentSkills: battleData.opponentSkills || [],
+                    createdAt: new Date().toISOString()
+                };
+                
+                // 승자의 전투 기록
+                const winnerBattleRecord = {
+                    ...battleRecord,
+                    result: 'win',
+                    opponentId: loserData.id,
+                    opponentName: loserData.name,
+                    opponentImage: loserData.imageUrl
+                };
+                
+                // 패자의 전투 기록
+                const loserBattleRecord = {
+                    ...battleRecord,
+                    result: 'lose',
+                    opponentId: winnerData.id,
+                    opponentName: winnerData.name,
+                    opponentImage: winnerData.imageUrl
+                };
+                
+                // 전체 전투 기록 저장
+                const battleRef = doc(collection(db, 'battles'));
+                transaction.set(battleRef, battleRecord);
+                
+                // 각 캐릭터의 개별 전투 기록 저장
+                const winnerBattleHistoryRef = doc(collection(winnerRef, 'battleHistory'));
+                const loserBattleHistoryRef = doc(collection(loserRef, 'battleHistory'));
+                
+                transaction.set(winnerBattleHistoryRef, winnerBattleRecord);
+                transaction.set(loserBattleHistoryRef, loserBattleRecord);
+                
+                console.log('전투 기록이 트랜잭션에 포함되었습니다.');
+            }
         });
         
-        console.log('Wins and losses updated successfully.');
-        
-        // 전투 기록 저장
-        if (battleData) {
-            console.log('전투 기록 저장 시작');
-            const winnerData = { id: winnerId, ...battleData.winner };
-            const loserData = { id: loserId, ...battleData.loser };
-            await saveBattleRecord(winnerData, loserData, battleData);
-            console.log('전투 기록 저장 완료');
-        }
+        console.log('승패기록과 전투기록이 동시에 저장되었습니다.');
         
         // 즉시 UI 업데이트
         console.log('UI 업데이트 시작');
@@ -3662,6 +4028,8 @@ async function updateCharacterStats(winner, loser) {
         await updateWinsLosses(winnerId, loserId, battleData);
         console.log('updateWinsLosses 호출 완료');
         
+        // 루나 지급은 updateWinsLosses 함수에서 처리됨
+        
         // 랭킹이 열려있으면 새로고침
         if (!rankingModal.classList.contains('hidden')) {
             loadRanking();
@@ -3782,6 +4150,9 @@ async function generateAndShowNovelLog() {
         console.log('Generated novel text:', novelText);
         console.log('Formatted novel:', formattedNovel);
         
+        // 루나 지급은 updateWinsLosses 함수에서 처리됨 (중복 지급 방지)
+        console.log('전투 스토리 표시 - 루나 지급은 이미 updateWinsLosses에서 처리됨');
+        
         // 소설 로그를 전투 로그 영역에 직접 표시
         const novelSection = document.createElement('div');
         novelSection.className = 'novel-section';
@@ -3817,11 +4188,11 @@ async function generateAndShowNovelLog() {
             storyContainer.className = 'battle-story-container';
             storyContainer.appendChild(novelSection);
             
-            // 전투 이미지 생성 버튼 추가
+            // 전투 이미지 생성 버튼 추가 (베타 버전, 루나 소모)
             const generateImageBtn = document.createElement('button');
             generateImageBtn.id = 'story-generate-battle-image-btn';
             generateImageBtn.className = 'btn btn-primary';
-            generateImageBtn.textContent = '🎨 전투 장면 이미지 생성';
+            generateImageBtn.innerHTML = '🎨 전투 장면 이미지 생성 <span class="beta-badge">Beta</span><span class="luna-cost">1000</span>';
             generateImageBtn.addEventListener('click', generateBattleImage);
             
             // 이미지 컨테이너 추가
@@ -4190,20 +4561,37 @@ async function loadRanking() {
 
 async function showRankingCharacterDetails(character) {
     try {
-        // 캐시된 캐릭터 데이터에서 직접 찾기 (Firebase 쿼리 없이)
+        // Firebase에서 최신 캐릭터 데이터 가져오기 (업데이트된 스킬 반영)
         let fullCharacterData = character;
         
-        // allCharactersCache에서 해당 캐릭터 찾기
-        if (allCharactersCache && allCharactersCache.length > 0) {
-            const cachedCharacter = allCharactersCache.find(char => char.name === character.name);
-            if (cachedCharacter) {
-                fullCharacterData = { ...cachedCharacter, ...character };
+        // 캐릭터 ID로 Firebase에서 최신 데이터 조회
+        try {
+            const allCharsQuery = query(collectionGroup(db, 'characters'));
+            const allCharsSnapshot = await getDocs(allCharsQuery);
+            
+            for (const charDoc of allCharsSnapshot.docs) {
+                const charData = charDoc.data();
+                if (charData.name === character.name) {
+                    fullCharacterData = { id: charDoc.id, ...charData, ...character };
+                    console.log('Firebase에서 최신 캐릭터 데이터 로드됨:', fullCharacterData);
+                    break;
+                }
+            }
+        } catch (firebaseError) {
+            console.warn('Firebase에서 최신 데이터 로드 실패, 캐시 데이터 사용:', firebaseError);
+            // Firebase 조회 실패 시 캐시된 데이터 사용
+            if (allCharactersCache && allCharactersCache.length > 0) {
+                const cachedCharacter = allCharactersCache.find(char => char.name === character.name);
+                if (cachedCharacter) {
+                    fullCharacterData = { ...cachedCharacter, ...character };
+                }
             }
         }
         
         // 디버깅: 캐릭터 데이터 확인
-        console.log('캐릭터 데이터:', fullCharacterData);
-        console.log('스킬 데이터:', fullCharacterData.skills);
+        console.log('최종 캐릭터 데이터:', fullCharacterData);
+        console.log('공격 스킬:', fullCharacterData.attack_skills);
+        console.log('방어 스킬:', fullCharacterData.defense_skills);
         
         // 캐릭터 이미지 URL 처리
         const imageUrl = fullCharacterData.imageUrl || 'https://placehold.co/300x300/333/FFF?text=?';
@@ -4312,6 +4700,56 @@ async function generateBattleImage() {
     // 이미 이미지가 생성되었는지 확인 (한 번만 생성 허용)
     if (storyGenerateBtn.dataset.imageGenerated === 'true') {
         console.log('이미지가 이미 생성되었습니다.');
+        return;
+    }
+    
+    // 루나 소모 확인 및 처리 (1000 루나)
+    const LUNA_COST = 1000;
+    
+    if (!currentUser) {
+        alert('로그인이 필요합니다.');
+        return;
+    }
+    
+    try {
+        // 현재 루나 잔액 확인
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        const userDoc = await getDoc(userDocRef);
+        
+        if (!userDoc.exists()) {
+            alert('사용자 정보를 찾을 수 없습니다.');
+            return;
+        }
+        
+        const currentLuna = userDoc.data().luna || 0;
+        
+        if (currentLuna < LUNA_COST) {
+            alert(`루나가 부족합니다. 필요: ${LUNA_COST} 루나, 보유: ${currentLuna} 루나`);
+            return;
+        }
+        
+        // 루나 소모 확인
+        const confirmSpend = confirm(`전투 이미지 생성에 ${LUNA_COST} 루나가 소모됩니다. 계속하시겠습니까?`);
+        if (!confirmSpend) {
+            return;
+        }
+        
+        // 루나 차감
+        await updateDoc(userDocRef, {
+            luna: currentLuna - LUNA_COST
+        });
+        
+        console.log(`루나 ${LUNA_COST} 소모됨. 남은 루나: ${currentLuna - LUNA_COST}`);
+        
+        // 루나 표시 업데이트
+        const lunaDisplay = document.getElementById('luna-amount');
+        if (lunaDisplay) {
+            lunaDisplay.textContent = (currentLuna - LUNA_COST).toLocaleString();
+        }
+        
+    } catch (error) {
+        console.error('루나 처리 중 오류:', error);
+        alert('루나 처리 중 오류가 발생했습니다.');
         return;
     }
     
@@ -4702,8 +5140,18 @@ async function loadAdminData() {
         totalCharactersCount.textContent = totalCharacters;
         totalUsersCount.textContent = totalUsers;
         
+        // 현재 사용자의 루나 표시 업데이트
+        const adminCurrentLuna = document.getElementById('admin-current-luna');
+        if (adminCurrentLuna && currentUser) {
+            adminCurrentLuna.textContent = userLuna;
+        }
+        
         // 모든 캐릭터 목록 로드
         await loadAllCharactersForAdmin();
+        
+        // 모든 사용자 목록 자동 로드
+        const allUsers = await loadAllUsers();
+        displaySearchResults(allUsers);
         
     } catch (error) {
         console.error('Error loading admin data:', error);
@@ -4953,11 +5401,18 @@ window.deleteCharacterFromAdmin = deleteCharacterFromAdmin;
 window.showBattleExitModal = showBattleExitModal;
 window.confirmBattleExit = confirmBattleExit;
 window.closeBattleExitModal = closeBattleExitModal;
+window.upgradeSkill = upgradeSkill;
+window.addNewSkill = addNewSkill;
 
 // --- EVENT LISTENERS ---
 adminBtn.addEventListener('click', () => {
-    showView('admin');
-    loadAdminData();
+    const password = prompt('관리자 비밀번호를 입력하세요:');
+    if (password === '4321') {
+        showView('admin');
+        loadAdminData();
+    } else if (password !== null) {
+        alert('비밀번호가 틀렸습니다.');
+    }
 });
 
 backToCardsFromAdminBtn.addEventListener('click', () => {
@@ -4970,6 +5425,84 @@ refreshDataBtn.addEventListener('click', () => {
 
 exportDataBtn.addEventListener('click', () => {
     exportAdminData();
+});
+
+// 루나 관리 시스템 이벤트 리스너들
+let selectedUserId = null;
+let selectedUserData = null;
+
+// 사용자 검색 버튼
+const searchUsersBtn = document.getElementById('search-users-btn');
+if (searchUsersBtn) {
+    console.log('사용자 검색 버튼 이벤트 리스너 추가됨');
+    searchUsersBtn.addEventListener('click', async () => {
+        console.log('사용자 검색 버튼 클릭됨');
+        const searchInput = document.getElementById('user-search-input');
+        const searchTerm = searchInput.value.trim();
+        console.log('검색어:', searchTerm);
+        
+        const users = await searchUsers(searchTerm);
+        console.log('검색 결과:', users);
+        displaySearchResults(users);
+    });
+} else {
+    console.error('사용자 검색 버튼을 찾을 수 없습니다: search-users-btn');
+}
+
+// 검색 입력창에서 엔터키 처리
+const userSearchInput = document.getElementById('user-search-input');
+if (userSearchInput) {
+    console.log('사용자 검색 입력창 이벤트 리스너 추가됨');
+    userSearchInput.addEventListener('keypress', async (e) => {
+        if (e.key === 'Enter') {
+            console.log('엔터키 눌림, 검색 시작');
+            const searchTerm = e.target.value.trim();
+            console.log('검색어:', searchTerm);
+            const users = await searchUsers(searchTerm);
+            console.log('검색 결과:', users);
+            displaySearchResults(users);
+        }
+    });
+} else {
+    console.error('사용자 검색 입력창을 찾을 수 없습니다: user-search-input');
+}
+
+// 루나 추가 버튼
+const addLunaBtn = document.getElementById('add-luna-btn');
+addLunaBtn.addEventListener('click', async () => {
+    if (!selectedUserId) {
+        alert('먼저 사용자를 선택해주세요.');
+        return;
+    }
+    
+    const amountInput = document.getElementById('luna-amount-input');
+    const amount = parseInt(amountInput.value);
+    
+    if (!amount || amount <= 0) {
+        alert('올바른 루나 수량을 입력해주세요.');
+        return;
+    }
+    
+    await manageLuna(selectedUserId, amount, 'add');
+});
+
+// 루나 감소 버튼
+const subtractLunaBtn = document.getElementById('subtract-luna-btn');
+subtractLunaBtn.addEventListener('click', async () => {
+    if (!selectedUserId) {
+        alert('먼저 사용자를 선택해주세요.');
+        return;
+    }
+    
+    const amountInput = document.getElementById('luna-amount-input');
+    const amount = parseInt(amountInput.value);
+    
+    if (!amount || amount <= 0) {
+        alert('올바른 루나 수량을 입력해주세요.');
+        return;
+    }
+    
+    await manageLuna(selectedUserId, amount, 'subtract');
 });
 
 // 마이그레이션 버튼 이벤트 리스너
@@ -4985,20 +5518,7 @@ backToDetailFromMatchingBtn.addEventListener('click', () => {
     showView('character-detail');
 });
 
-backToMatchingBtn.addEventListener('click', () => {
-    // 전투 중인지 확인
-    const battleSection = document.getElementById('battle-section');
-    const newBattleGaugeContainer = document.getElementById('new-battle-gauge-container');
-    
-    // 전투가 진행 중인 경우 (게이지가 표시되고 있는 경우)
-    if (battleSection && !battleSection.classList.contains('hidden') && 
-        newBattleGaugeContainer && !newBattleGaugeContainer.classList.contains('hidden')) {
-        showBattleExitModal();
-    } else {
-        // 전투가 진행 중이 아닌 경우 바로 매칭 화면으로
-        showView('matching');
-    }
-});
+// backToMatchingBtn 제거됨 - 더 이상 사용하지 않음
 
 // 소설 로그에서 캐릭터 카드로 돌아가기 (기존 기능 유지)
 const backToCardsFromNovelBtn = document.getElementById('back-to-cards-from-novel-btn');
@@ -5007,4 +5527,1187 @@ if (backToCardsFromNovelBtn) {
         novelLogModal.classList.add('hidden');
         showView('character-cards');
     });
+}
+
+// ------------------------------------------------------------------
+// 루나 시스템 관련 함수들
+// ------------------------------------------------------------------
+
+// 루나 잔액 업데이트 함수
+function updateLunaDisplay() {
+    const lunaAmountElement = document.getElementById('luna-amount');
+    if (lunaAmountElement) {
+        lunaAmountElement.textContent = userLuna;
+    }
+}
+
+// 루나 잔액 로드 함수
+async function loadUserLuna() {
+    if (!currentUser) return;
+    
+    try {
+        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+        if (userDoc.exists()) {
+            const userData = userDoc.data();
+            userLuna = userData.luna || 0;
+        } else {
+            userLuna = 0;
+        }
+        updateLunaDisplay();
+    } catch (error) {
+        console.error('Error loading user luna:', error);
+        userLuna = 0;
+        updateLunaDisplay();
+    }
+}
+
+// 루나 잔액 저장 함수
+async function saveUserLuna() {
+    if (!currentUser) return;
+    
+    try {
+        await setDoc(doc(db, 'users', currentUser.uid), {
+            luna: userLuna
+        }, { merge: true });
+    } catch (error) {
+        console.error('Error saving user luna:', error);
+    }
+}
+
+// 루나 추가 함수 (전투 승리 시 호출)
+async function addLuna(amount) {
+    userLuna += amount;
+    updateLunaDisplay();
+    await saveUserLuna();
+}
+
+// 캐릭터 소유자에게 루나 지급 함수 (오프라인 사용자 포함)
+async function awardLunaToCharacterOwner(characterId) {
+    try {
+        console.log('=== 루나 지급 시작 ===');
+        console.log('awardLunaToCharacterOwner 시작 - characterId:', characterId);
+        console.log('characterId 타입:', typeof characterId);
+        
+        // 캐릭터의 소유자 찾기
+        console.log('findCharacterRef 호출 중...');
+        const characterRef = await findCharacterRef(characterId);
+        console.log('findCharacterRef 결과:', characterRef);
+        
+        if (!characterRef) {
+            console.log('❌ 캐릭터를 찾을 수 없습니다:', characterId);
+            return;
+        }
+        
+        console.log('캐릭터 문서 가져오는 중...');
+        const characterDoc = await getDoc(characterRef);
+        console.log('캐릭터 문서 존재 여부:', characterDoc.exists());
+        
+        if (!characterDoc.exists()) {
+            console.log('❌ 캐릭터 문서가 존재하지 않습니다:', characterId);
+            return;
+        }
+        
+        const characterData = characterDoc.data();
+        console.log('캐릭터 데이터:', characterData);
+        
+        const ownerId = characterData.createdBy;
+        console.log('캐릭터 소유자 ID:', ownerId);
+        
+        if (!ownerId) {
+            console.log('❌ 캐릭터 소유자 정보가 없습니다:', characterId);
+            console.log('캐릭터 데이터 전체:', JSON.stringify(characterData, null, 2));
+            return;
+        }
+        
+        console.log('✅ 캐릭터 소유자 찾음:', ownerId);
+        
+        // 소유자의 루나 정보 가져오기
+        console.log('사용자 루나 정보 가져오는 중...');
+        const userRef = doc(db, 'users', ownerId);
+        const userDoc = await getDoc(userRef);
+        console.log('사용자 문서 존재 여부:', userDoc.exists());
+        
+        let currentLuna = 0;
+        if (userDoc.exists()) {
+            const userData = userDoc.data();
+            currentLuna = userData.luna || 0;
+            console.log('현재 사용자 데이터:', userData);
+        } else {
+            console.log('사용자 문서가 존재하지 않음, 새로 생성됩니다.');
+        }
+        
+        console.log('현재 루나:', currentLuna);
+        
+        // 루나 1개 추가
+        const newLuna = currentLuna + 1;
+        console.log('새 루나 값:', newLuna);
+        
+        // 사용자 문서에 루나 업데이트
+        console.log('Firebase에 루나 업데이트 중...');
+        await setDoc(userRef, {
+            luna: newLuna
+        }, { merge: true });
+        
+        console.log(`✅ 캐릭터 소유자 ${ownerId}에게 루나 1개 지급 완료 (${currentLuna} -> ${newLuna})`);
+        
+        // 현재 로그인한 사용자가 루나를 받은 경우 UI 업데이트 및 알림 표시
+        if (currentUser && currentUser.uid === ownerId) {
+            console.log('현재 로그인한 사용자가 루나를 받았습니다. UI 업데이트 중...');
+            userLuna = newLuna;
+            updateLunaDisplay();
+            
+            // 루나 지급 알림 표시
+            console.log('showLunaRewardNotification 함수 호출 시작');
+            try {
+                showLunaRewardNotification();
+                console.log('showLunaRewardNotification 함수 호출 완료');
+            } catch (error) {
+                console.error('showLunaRewardNotification 함수 호출 중 오류:', error);
+            }
+            
+            console.log('✅ 현재 사용자의 루나 UI 업데이트 및 알림 표시 완료');
+        } else {
+            console.log('다른 사용자가 루나를 받았습니다. 현재 사용자:', currentUser?.uid, '루나 받은 사용자:', ownerId);
+        }
+        
+        console.log('=== 루나 지급 완료 ===');
+        
+    } catch (error) {
+        console.error('❌ 캐릭터 소유자에게 루나 지급 중 오류:', error);
+        console.error('오류 스택:', error.stack);
+    }
+}
+
+// 루나 지급 알림 표시 함수
+function showLunaRewardNotification() {
+    // 기존 알림이 있다면 제거
+    const existingNotification = document.querySelector('.luna-reward-notification');
+    if (existingNotification) {
+        existingNotification.remove();
+    }
+    
+    // 알림 요소 생성
+    const notification = document.createElement('div');
+    notification.className = 'luna-reward-notification';
+    notification.innerHTML = `
+        <div class="notification-content">
+            <div class="notification-icon">🌙</div>
+            <div class="notification-text">
+                <h3>전투 승리!</h3>
+                <p>루나 1개를 획득했습니다!</p>
+            </div>
+            <button class="notification-close" onclick="this.parentElement.parentElement.remove()">&times;</button>
+        </div>
+    `;
+    
+    // 스타일 적용
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 0;
+        border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        z-index: 10000;
+        animation: slideInRight 0.5s ease-out;
+        max-width: 350px;
+        overflow: hidden;
+    `;
+    
+    // 내부 콘텐츠 스타일
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes slideInRight {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        
+        .luna-reward-notification .notification-content {
+            display: flex;
+            align-items: center;
+            padding: 16px;
+            gap: 12px;
+        }
+        
+        .luna-reward-notification .notification-icon {
+            font-size: 32px;
+            flex-shrink: 0;
+        }
+        
+        .luna-reward-notification .notification-text h3 {
+            margin: 0 0 4px 0;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        
+        .luna-reward-notification .notification-text p {
+            margin: 0;
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        
+        .luna-reward-notification .notification-close {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 4px;
+            margin-left: auto;
+            opacity: 0.7;
+            transition: opacity 0.2s;
+        }
+        
+        .luna-reward-notification .notification-close:hover {
+            opacity: 1;
+        }
+    `;
+    
+    // 스타일과 알림을 DOM에 추가
+    document.head.appendChild(style);
+    document.body.appendChild(notification);
+    
+    // 5초 후 자동으로 제거
+    setTimeout(() => {
+        if (notification && notification.parentElement) {
+            notification.style.animation = 'slideInRight 0.5s ease-out reverse';
+            setTimeout(() => {
+                if (notification && notification.parentElement) {
+                    notification.remove();
+                }
+            }, 500);
+        }
+    }, 5000);
+    
+    console.log('루나 지급 알림이 표시되었습니다.');
+}
+
+// 루나 차감 함수 (스킬 업그레이드/추가 시 호출)
+async function spendLuna(amount) {
+    console.log('=== spendLuna 시작 ===');
+    console.log('차감할 amount:', amount);
+    console.log('현재 userLuna:', userLuna);
+    console.log('userLuna >= amount:', userLuna >= amount);
+    
+    if (userLuna >= amount) {
+        console.log('루나 차감 진행');
+        userLuna -= amount;
+        console.log('차감 후 userLuna:', userLuna);
+        
+        console.log('updateLunaDisplay 호출');
+        updateLunaDisplay();
+        
+        console.log('saveUserLuna 호출');
+        await saveUserLuna();
+        console.log('saveUserLuna 완료');
+        
+        console.log('spendLuna 성공 반환');
+        return true;
+    }
+    
+    console.log('루나 부족으로 spendLuna 실패');
+    return false;
+}
+
+// 스킬 업그레이드 함수
+async function upgradeSkill(characterId, skillType, skillIndex) {
+    console.log('🔧 [DEBUG] upgradeSkill 시작:', { characterId, skillType, skillIndex });
+    
+    const cost = 50;
+    
+    console.log('🔧 [DEBUG] Luna 확인:', { userLuna, cost });
+    if (userLuna < cost) {
+        console.log('🔧 [DEBUG] Luna 부족으로 중단');
+        alert(`루나가 부족합니다. 필요한 루나: ${cost}, 보유 루나: ${userLuna}`);
+        return;
+    }
+    
+    // 로딩 스피너 표시
+    console.log('🔧 [DEBUG] 로딩 스피너 표시');
+    const spinner = showLoadingSpinner('스킬을 업그레이드하고 있습니다...');
+    
+    try {
+        // 캐릭터 데이터 가져오기
+        console.log('🔧 [DEBUG] 캐릭터 데이터 가져오기 시도:', { currentUserUid: currentUser.uid, characterId });
+        const characterRef = doc(db, 'users', currentUser.uid, 'characters', characterId);
+        const characterDoc = await getDoc(characterRef);
+        console.log('🔧 [DEBUG] characterDoc 결과:', { exists: characterDoc.exists() });
+        
+        if (!characterDoc.exists()) {
+            console.error('🔧 [DEBUG] 캐릭터 문서가 존재하지 않음');
+            hideLoadingSpinner(spinner);
+            alert('캐릭터를 찾을 수 없습니다.');
+            return;
+        }
+        
+        const characterData = characterDoc.data();
+        console.log('🔧 [DEBUG] 캐릭터 데이터:', characterData);
+        
+        const skillsField = skillType === 'attack' ? 'attack_skills' : 'defense_skills';
+        const skills = characterData[skillsField];
+        console.log('🔧 [DEBUG] 스킬 정보:', { skillsField, skills, skillIndex });
+        
+        if (!skills || !skills[skillIndex]) {
+            console.error('🔧 [DEBUG] 스킬을 찾을 수 없음:', { skills, skillIndex });
+            hideLoadingSpinner(spinner);
+            alert('스킬을 찾을 수 없습니다.');
+            return;
+        }
+        
+        const originalSkill = skills[skillIndex];
+        console.log('🔧 [DEBUG] 원본 스킬:', originalSkill);
+        
+        // AI로 업그레이드된 스킬 생성
+        console.log('🔧 [DEBUG] AI 스킬 업그레이드 생성 시작');
+        const upgradedSkill = await generateUpgradedSkill(originalSkill, characterData);
+        console.log('🔧 [DEBUG] 업그레이드된 스킬:', upgradedSkill);
+        
+        hideLoadingSpinner(spinner);
+        
+        if (!upgradedSkill) {
+            console.error('🔧 [DEBUG] 스킬 업그레이드 생성 실패');
+            alert('스킬 업그레이드 생성에 실패했습니다.');
+            return;
+        }
+        
+        // 사용자에게 확인 요청
+        console.log('🔧 [DEBUG] 사용자 확인 모달 표시');
+        const confirmed = await showSkillUpgradeModal(originalSkill, upgradedSkill, cost);
+        console.log('🔧 [DEBUG] 사용자 확인 결과:', confirmed);
+        
+        if (confirmed) {
+            console.log('🔧 [DEBUG] 사용자가 확인함 - 업그레이드 진행');
+            
+            // 루나 차감
+            console.log('🔧 [DEBUG] Luna 차감 시작');
+            await spendLuna(cost);
+            console.log('🔧 [DEBUG] Luna 차감 완료, 새로운 Luna:', userLuna);
+            
+            // 스킬 업데이트
+            console.log('🔧 [DEBUG] 스킬 업데이트 시작');
+            skills[skillIndex] = upgradedSkill;
+            console.log('🔧 [DEBUG] 업데이트할 데이터:', { [skillsField]: skills });
+            
+            await updateDoc(characterRef, {
+                [skillsField]: skills
+            });
+            console.log('🔧 [DEBUG] Firebase 업데이트 완료');
+            
+            alert('스킬이 성공적으로 업그레이드되었습니다!');
+            
+            // 캐릭터 상세 화면 새로고침
+            console.log('🔧 [DEBUG] 캐릭터 상세 화면 새로고침 시작');
+            const updatedCharacterData = {
+                ...characterData,
+                id: characterId,
+                [skillsField]: skills
+            };
+            console.log('🔧 [DEBUG] 업데이트된 캐릭터 데이터:', updatedCharacterData);
+            showCharacterDetail(updatedCharacterData);
+            console.log('🔧 [DEBUG] upgradeSkill 완료');
+        } else {
+            console.log('🔧 [DEBUG] 사용자가 취소함');
+        }
+        
+    } catch (error) {
+        console.error('🔧 [DEBUG] 스킬 업그레이드 오류:', error);
+        console.error('🔧 [DEBUG] 오류 스택:', error.stack);
+        hideLoadingSpinner(spinner);
+        alert('스킬 업그레이드 중 오류가 발생했습니다.');
+    }
+}
+
+// 새 스킬 추가 함수
+async function addNewSkill(characterId, skillType) {
+    const cost = 100;
+    
+    console.log('=== addNewSkill 시작 ===');
+    console.log('characterId:', characterId);
+    console.log('skillType:', skillType);
+    console.log('현재 userLuna:', userLuna);
+    console.log('필요한 cost:', cost);
+    
+    if (userLuna < cost) {
+        console.log('루나 부족으로 함수 종료');
+        alert(`루나가 부족합니다. 필요한 루나: ${cost}, 보유 루나: ${userLuna}`);
+        return;
+    }
+    
+    const confirmed = confirm(`${cost} 루나를 사용하여 새로운 ${skillType === 'attack' ? '공격' : '방어'} 스킬을 추가하시겠습니까?`);
+    console.log('초기 확인 결과:', confirmed);
+    
+    if (!confirmed) {
+        console.log('사용자가 초기 확인을 취소함');
+        return;
+    }
+    
+    // 로딩 스피너 표시
+    const spinner = showLoadingSpinner('새로운 스킬을 생성하고 있습니다...');
+    console.log('로딩 스피너 표시됨');
+    
+    try {
+        // 캐릭터 데이터 가져오기
+        console.log('캐릭터 데이터 가져오기 시작');
+        console.log('currentUser:', currentUser);
+        console.log('currentUser.uid:', currentUser?.uid);
+        
+        const characterRef = doc(db, 'users', currentUser.uid, 'characters', characterId);
+        console.log('characterRef 생성됨');
+        
+        const characterDoc = await getDoc(characterRef);
+        console.log('characterDoc 가져옴:', characterDoc.exists());
+        
+        if (!characterDoc.exists()) {
+            console.log('캐릭터 문서가 존재하지 않음');
+            hideLoadingSpinner(spinner);
+            alert('캐릭터를 찾을 수 없습니다.');
+            return;
+        }
+        
+        const characterData = characterDoc.data();
+        console.log('캐릭터 데이터:', characterData);
+        console.log('기존 attack_skills:', characterData.attack_skills);
+        console.log('기존 defense_skills:', characterData.defense_skills);
+        
+        // AI로 새 스킬 생성
+        console.log('AI 스킬 생성 시작');
+        const newSkill = await generateNewSkill(skillType, characterData);
+        console.log('생성된 새로운 스킬:', newSkill);
+        
+        hideLoadingSpinner(spinner);
+        console.log('로딩 스피너 숨김');
+        
+        if (!newSkill) {
+            console.log('스킬 생성 실패');
+            alert('새 스킬 생성에 실패했습니다.');
+            return;
+        }
+        
+        // 사용자에게 확인 요청
+        console.log('🔍 DEBUG: 사용자 확인 모달 표시 시작');
+        console.log('🔍 DEBUG: showNewSkillModal에 전달할 newSkill:', newSkill);
+        console.log('🔍 DEBUG: showNewSkillModal에 전달할 cost:', cost);
+        const skillConfirmed = await showNewSkillModal(newSkill, cost);
+        console.log('🔍 DEBUG: 사용자 스킬 확인 결과:', skillConfirmed);
+        
+        if (skillConfirmed) {
+            console.log('사용자가 스킬을 확인함 - 루나 차감 및 스킬 추가 진행');
+            
+            // 루나 차감
+            console.log('루나 차감 시작, 현재 루나:', userLuna);
+            await spendLuna(cost);
+            console.log('루나 차감 완료, 새 루나:', userLuna);
+            
+            // 스킬 추가 (올바른 필드명 사용)
+            const skillsField = skillType === 'attack' ? 'attack_skills' : 'defense_skills';
+            console.log('사용할 스킬 필드:', skillsField);
+            
+            const currentSkills = characterData[skillsField] || [];
+            console.log('현재 스킬 목록:', currentSkills);
+            console.log('현재 스킬 개수:', currentSkills.length);
+            
+            currentSkills.push(newSkill);
+            console.log('새 스킬 추가 후 목록:', currentSkills);
+            console.log('새 스킬 추가 후 개수:', currentSkills.length);
+            
+            console.log('Firebase 업데이트 시작');
+            console.log('업데이트할 데이터:', { [skillsField]: currentSkills });
+            
+            await updateDoc(characterRef, {
+                [skillsField]: currentSkills
+            });
+            console.log('Firebase 업데이트 완료');
+            
+            alert('새 스킬이 성공적으로 추가되었습니다!');
+            
+            // 캐릭터 상세 화면 새로고침
+            console.log('🔍 DEBUG: 캐릭터 상세 화면 새로고침 시작');
+            console.log('🔍 DEBUG: 업데이트된 스킬 필드:', skillsField);
+            console.log('🔍 DEBUG: 업데이트된 스킬 목록:', currentSkills);
+            
+            // 매칭 관련 변수 초기화 (스킬이 화면 하단에 표시되는 것을 방지)
+            console.log('🔍 DEBUG: 매칭 관련 변수 초기화');
+            const previousPlayerCharacter = playerCharacterForBattle;
+            playerCharacterForBattle = null;
+            opponentCharacterForBattle = null;
+            selectedSkills = [];
+            
+            // 업데이트된 캐릭터 데이터로 상세 화면 새로고침
+            const updatedCharacterData = {
+                ...characterData,
+                id: characterId,
+                [skillsField]: currentSkills
+            };
+            console.log('🔍 DEBUG: showCharacterDetail 호출 전 - 업데이트된 캐릭터 데이터:', updatedCharacterData);
+            showCharacterDetail(updatedCharacterData);
+            console.log('🔍 DEBUG: showCharacterDetail 호출 완료');
+            
+            // 매칭 관련 UI 요소들 숨기기
+            console.log('🔍 DEBUG: 매칭 관련 UI 요소 숨기기');
+            const skillChoicesContainer = document.getElementById('skill-choices');
+            const matchedSkillChoices = document.getElementById('matched-skill-choices');
+            const skillSelectionContainer = document.getElementById('skill-selection-container');
+            
+            if (skillChoicesContainer) {
+                console.log('🔍 DEBUG: skillChoicesContainer 숨김');
+                skillChoicesContainer.innerHTML = '';
+                skillChoicesContainer.style.display = 'none';
+            }
+            if (matchedSkillChoices) {
+                console.log('🔍 DEBUG: matchedSkillChoices 숨김');
+                matchedSkillChoices.innerHTML = '';
+                matchedSkillChoices.style.display = 'none';
+            }
+            if (skillSelectionContainer) {
+                console.log('🔍 DEBUG: skillSelectionContainer 숨김');
+                skillSelectionContainer.classList.add('hidden');
+            }
+        } else {
+            console.log('사용자가 스킬 확인을 취소함');
+        }
+        
+    } catch (error) {
+        hideLoadingSpinner(spinner);
+        console.error('Error adding new skill:', error);
+        console.error('Error stack:', error.stack);
+        alert('새 스킬 추가 중 오류가 발생했습니다.');
+    }
+    
+    console.log('=== addNewSkill 종료 ===');
+}
+
+// AI로 업그레이드된 스킬 생성
+async function generateUpgradedSkill(originalSkill, characterData) {
+    console.log('🔧 [DEBUG] generateUpgradedSkill 시작:', { originalSkill, characterData });
+    
+    const prompt = `다음 캐릭터의 스킬을 한 단계 업그레이드해주세요.
+
+캐릭터 정보:
+- 이름: ${characterData.name}
+- 컨셉: ${characterData.concept}
+- 스토리: ${characterData.story}
+
+업그레이드할 원본 스킬:
+- 이름: ${originalSkill.name}
+- 설명: ${originalSkill.description}
+
+업그레이드 요구사항:
+1. 원본 스킬의 컨셉과 테마를 유지하면서 더 강력하게 만들어주세요
+2. 스킬 이름도 업그레이드된 느낌으로 변경해주세요
+3. 설명은 1-2문장으로 간결하게 작성하고, 더 강력해진 효과를 반영해주세요
+
+다음 JSON 형식으로만 응답해주세요:
+{
+  "name": "업그레이드된 스킬 이름",
+  "description": "업그레이드된 스킬 설명 (1-2문장)"
+}`;
+    
+    console.log('🔧 [DEBUG] AI 프롬프트 생성 완료, generateWithFallback 호출');
+    
+    try {
+        const result = await generateWithFallback(prompt);
+        console.log('🔧 [DEBUG] generateWithFallback 결과:', result);
+        
+        const responseText = result.response ? result.response.text() : result;
+        console.log('🔧 [DEBUG] AI 응답 텍스트:', responseText);
+        
+        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+        console.log('🔧 [DEBUG] JSON 매치 결과:', jsonMatch);
+        
+        if (jsonMatch) {
+            const skillData = JSON.parse(jsonMatch[0]);
+            console.log('🔧 [DEBUG] 파싱된 스킬 데이터:', skillData);
+            
+            const finalSkill = {
+                name: skillData.name,
+                description: skillData.description
+            };
+            console.log('🔧 [DEBUG] 최종 반환할 스킬:', finalSkill);
+            return finalSkill;
+        } else {
+            console.error('🔧 [DEBUG] JSON 매치 실패');
+        }
+    } catch (error) {
+        console.error('🔧 [DEBUG] generateUpgradedSkill 오류:', error);
+        console.error('🔧 [DEBUG] 오류 스택:', error.stack);
+    }
+    
+    console.log('🔧 [DEBUG] generateUpgradedSkill null 반환');
+    return null;
+}
+
+// AI로 새 스킬 생성
+async function generateNewSkill(skillType, characterData) {
+    const prompt = `다음 캐릭터에게 새로운 ${skillType === 'attack' ? '공격' : '방어'} 스킬을 만들어주세요.
+
+캐릭터 정보:
+- 이름: ${characterData.name}
+- 컨셉: ${characterData.concept}
+- 스토리: ${characterData.story}
+
+기존 ${skillType === 'attack' ? '공격' : '방어'} 스킬들:
+${((skillType === 'attack' ? characterData.attackSkills : characterData.defenseSkills) || []).map(skill => `- ${skill.name}: ${skill.description}`).join('\n')}
+
+새 스킬 요구사항:
+1. 캐릭터의 컨셉과 스토리에 맞는 ${skillType === 'attack' ? '공격' : '방어'} 스킬을 만들어주세요
+2. 기존 스킬들과 중복되지 않는 독특한 스킬을 만들어주세요
+3. 스킬 이름과 설명은 창의적이고 흥미롭게 작성해주세요
+4. 스킬 설명은 1-2문장으로 간결하게 작성해주세요
+
+다음 JSON 형식으로만 응답해주세요:
+{
+  "name": "새 스킬 이름",
+  "description": "새 스킬 설명 (1-2문장)"
+}`;
+    
+    try {
+        const result = await generateWithFallback(prompt);
+        const responseText = result.response ? result.response.text() : result;
+        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+        
+        if (jsonMatch) {
+            const skillData = JSON.parse(jsonMatch[0]);
+            console.log('🔍 DEBUG: generateNewSkill - 생성된 스킬 데이터:', skillData);
+            const finalSkill = {
+                name: skillData.name,
+                description: skillData.description
+            };
+            console.log('🔍 DEBUG: generateNewSkill - 최종 반환할 스킬:', finalSkill);
+            return finalSkill;
+        }
+    } catch (error) {
+        console.error('Error generating new skill:', error);
+    }
+    
+    return null;
+}
+
+// 스킬 업그레이드 확인 모달
+function showSkillUpgradeModal(originalSkill, upgradedSkill, cost) {
+    console.log('🔧 [DEBUG] showSkillUpgradeModal 시작:', { originalSkill, upgradedSkill, cost });
+    
+    return new Promise((resolve) => {
+        console.log('🔧 [DEBUG] Promise 생성, 모달 HTML 생성 시작');
+        
+        const modal = document.createElement('div');
+        modal.className = 'skill-upgrade-modal';
+        modal.innerHTML = `
+            <div class="skill-upgrade-modal-content">
+                <h3>🔮 스킬 업그레이드</h3>
+                <div class="skill-comparison">
+                    <div class="original-skill">
+                        <h4>현재 스킬</h4>
+                        <div class="skill-info">
+                            <strong>${originalSkill.name}</strong>
+                            <p>${originalSkill.description}</p>
+                        </div>
+                    </div>
+                    <div class="arrow">➡️</div>
+                    <div class="upgraded-skill">
+                        <h4>업그레이드된 스킬</h4>
+                        <div class="skill-info">
+                            <strong>${upgradedSkill.name}</strong>
+                            <p>${upgradedSkill.description}</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="cost-info">
+                    <p>💰 비용: ${cost} 루나</p>
+                </div>
+                <div class="modal-buttons">
+                    <button class="cancel-btn" onclick="closeSkillUpgradeModal(false)">취소</button>
+                    <button class="confirm-btn" onclick="closeSkillUpgradeModal(true)">업그레이드</button>
+                </div>
+            </div>
+        `;
+        
+        console.log('🔧 [DEBUG] 모달 HTML 생성 완료, DOM에 추가');
+        document.body.appendChild(modal);
+        console.log('🔧 [DEBUG] 모달이 DOM에 추가됨');
+        
+        window.closeSkillUpgradeModal = (confirmed) => {
+            console.log('🔧 [DEBUG] closeSkillUpgradeModal 호출됨, confirmed:', confirmed);
+            modal.remove();
+            delete window.closeSkillUpgradeModal;
+            console.log('🔧 [DEBUG] 모달 제거 완료, Promise resolve 호출');
+            resolve(confirmed);
+        };
+        
+        // 모달 외부 클릭 시 취소
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                console.log('🔧 [DEBUG] 모달 외부 클릭으로 취소');
+                window.closeSkillUpgradeModal(false);
+            }
+        });
+        
+        console.log('🔧 [DEBUG] 모달 이벤트 리스너 설정 완료');
+    });
+}
+
+
+
+// 새 스킬 확인 모달
+function showNewSkillModal(newSkill, cost) {
+    console.log('🔍 showNewSkillModal called with:', { newSkill, cost });
+    return new Promise((resolve) => {
+        console.log('🔍 Creating new skill modal...');
+        const modal = document.createElement('div');
+        modal.className = 'new-skill-modal';
+        modal.innerHTML = `
+            <div class="new-skill-modal-content">
+                <h3>✨ 새 스킬 추가</h3>
+                <div class="new-skill-preview">
+                    <div class="skill-info">
+                        <strong>${newSkill.name}</strong>
+                        <p>${newSkill.description}</p>
+
+                    </div>
+                </div>
+                <div class="cost-info">
+                    <p>💰 비용: ${cost} 루나</p>
+                </div>
+                <div class="modal-buttons">
+                    <button class="cancel-btn" onclick="closeNewSkillModal(false)">취소</button>
+                    <button class="confirm-btn" onclick="closeNewSkillModal(true)">추가</button>
+                </div>
+            </div>
+        `;
+        
+        console.log('🔍 Appending modal to document body...');
+        document.body.appendChild(modal);
+        console.log('🔍 Modal appended successfully');
+        
+        window.closeNewSkillModal = (confirmed) => {
+            console.log('🔍 closeNewSkillModal called with confirmed:', confirmed);
+            modal.remove();
+            delete window.closeNewSkillModal;
+            console.log('🔍 Resolving promise with:', confirmed);
+            resolve(confirmed);
+        };
+        
+        // 모달 외부 클릭 시 취소
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                console.log('🔍 Modal background clicked, closing with false');
+                window.closeNewSkillModal(false);
+            }
+        });
+    });
+}
+
+// 앱 초기화 시 루나 디스플레이 설정
+function initializeLunaDisplay() {
+    const lunaDisplay = document.getElementById('luna-display');
+    if (lunaDisplay && currentUser) {
+        lunaDisplay.classList.remove('hidden');
+        updateLunaDisplay();
+    }
+}
+
+// 로딩 스피너 표시 함수
+function showLoadingSpinner(message = '로딩 중...') {
+    const spinner = document.createElement('div');
+    spinner.className = 'loading-spinner-overlay';
+    spinner.innerHTML = `
+        <div class="loading-spinner-content">
+            <div class="spinner"></div>
+            <p class="loading-message">${message}</p>
+        </div>
+    `;
+    
+    document.body.appendChild(spinner);
+    return spinner;
+}
+
+// 로딩 스피너 숨기기 함수
+function hideLoadingSpinner(spinner) {
+    if (spinner && spinner.parentNode) {
+        spinner.parentNode.removeChild(spinner);
+    }
+}
+
+// 모든 사용자 로드 함수
+async function loadAllUsers() {
+    console.log('loadAllUsers 함수 호출됨');
+    try {
+        const usersRef = collection(db, 'users');
+        const querySnapshot = await getDocs(usersRef);
+        const users = [];
+        
+        console.log('사용자 문서 수:', querySnapshot.size);
+        
+        querySnapshot.forEach((doc) => {
+            const userData = doc.data();
+            console.log('사용자 데이터:', doc.id, userData);
+            
+            // userId가 있는 경우 그대로 사용, 없는 경우 uid 사용
+            let displayUserId = userData.userId;
+            if (!displayUserId && userData.uid) {
+                displayUserId = userData.uid;
+            }
+            if (!displayUserId) {
+                displayUserId = doc.id; // 마지막 대안으로 문서 ID 사용
+            }
+            
+            users.push({
+                id: doc.id,
+                userId: displayUserId,
+                originalUserId: userData.userId, // 원본 사용자 아이디 저장
+                email: userData.email, // 이메일 정보도 포함
+                luna: userData.luna || 0
+            });
+        });
+        
+        // 사용자 아이디 순으로 정렬
+        users.sort((a, b) => a.userId.localeCompare(b.userId));
+        console.log('로드된 사용자 목록:', users);
+        return users;
+    } catch (error) {
+        console.error('사용자 로드 오류:', error);
+        return [];
+    }
+}
+
+// 사용자 검색 함수
+async function searchUsers(searchTerm) {
+    console.log('searchUsers 함수 호출됨, 검색어:', searchTerm);
+    const allUsers = await loadAllUsers();
+    console.log('전체 사용자 수:', allUsers.length);
+    
+    if (!searchTerm || searchTerm.trim() === '') {
+        console.log('검색어가 없어서 모든 사용자 반환');
+        return allUsers; // 검색어가 없으면 모든 사용자 반환
+    }
+    
+    // 검색어로 필터링 - userId가 있는 경우와 이메일로 매칭하는 경우 모두 처리
+    const searchResults = [];
+    
+    for (const user of allUsers) {
+        console.log('사용자 검사 중:', user);
+        
+        // 1. userId가 있고 검색어와 매칭되는 경우
+        if (user.originalUserId && user.originalUserId.toLowerCase().includes(searchTerm.toLowerCase())) {
+            console.log('originalUserId로 매칭됨:', user.originalUserId);
+            searchResults.push(user);
+            continue;
+        }
+        
+        // 2. 기존 사용자들을 위해 검색어를 해시화해서 이메일과 매칭
+        try {
+            const searchEmail = await createEmailFromId(searchTerm);
+            console.log('검색어로 생성된 이메일:', searchEmail);
+            console.log('사용자 이메일:', user.email);
+            if (user.email === searchEmail) {
+                console.log('이메일 매칭 성공!');
+                // 매칭된 사용자에게 원본 아이디 추가
+                user.originalUserId = searchTerm;
+                searchResults.push(user);
+                continue;
+            }
+        } catch (error) {
+            console.error('이메일 해시 생성 오류:', error);
+        }
+        
+        // 3. 부분 매칭을 위해 userId로도 검색
+        if (user.userId && user.userId.toLowerCase().includes(searchTerm.toLowerCase())) {
+            console.log('userId로 매칭됨:', user.userId);
+            searchResults.push(user);
+        }
+    }
+    
+    console.log('검색 결과:', searchResults);
+    return searchResults;
+}
+
+// 사용자 검색 결과 표시
+function displaySearchResults(users) {
+    console.log('displaySearchResults 함수 호출됨, 사용자 수:', users.length);
+    const resultsContainer = document.getElementById('user-search-results');
+    
+    if (!resultsContainer) {
+        console.error('사용자 검색 결과 컨테이너를 찾을 수 없습니다: user-search-results');
+        return;
+    }
+    
+    // hidden 클래스 제거하여 컨테이너를 표시
+    resultsContainer.classList.remove('hidden');
+    resultsContainer.innerHTML = '';
+    
+    if (users.length === 0) {
+        resultsContainer.innerHTML = '<p>검색 결과가 없습니다.</p>';
+        console.log('검색 결과 없음');
+        return;
+    }
+    
+    users.forEach(user => {
+        const userElement = document.createElement('div');
+        userElement.className = 'user-result-item';
+        
+        // 표시할 사용자 아이디 결정 (원본 아이디 우선, 없으면 해시 아이디 앞 8자리만 표시)
+        let displayId;
+        if (user.originalUserId) {
+            displayId = user.originalUserId;
+        } else {
+            // 해시 아이디의 경우 앞 8자리만 표시하고 "..." 추가
+            displayId = user.userId.substring(0, 8) + '...';
+        }
+        
+        userElement.innerHTML = `
+            <span class="user-id" title="${user.userId}">${displayId}</span>
+            <span class="user-luna">${user.luna} 루나</span>
+        `;
+        
+        userElement.addEventListener('click', (event) => {
+            selectUser(user, userElement);
+        });
+        
+        resultsContainer.appendChild(userElement);
+    });
+    
+    console.log('사용자 검색 결과 표시 완료');
+}
+
+// 사용자 선택
+function selectUser(user, element) {
+    console.log('selectUser 호출됨:', user);
+    
+    // 이전 선택 해제
+    document.querySelectorAll('.user-result-item').forEach(item => {
+        item.classList.remove('selected');
+    });
+    
+    // 현재 선택 표시 (element가 있으면 사용, 없으면 찾기)
+    if (element) {
+        element.classList.add('selected');
+    } else {
+        // 사용자 ID로 해당 요소 찾기
+        const userElements = document.querySelectorAll('.user-result-item');
+        userElements.forEach(item => {
+            const userIdSpan = item.querySelector('.user-id');
+            if (userIdSpan && (userIdSpan.textContent === (user.originalUserId || user.userId.substring(0, 8) + '...'))) {
+                item.classList.add('selected');
+            }
+        });
+    }
+    
+    // 선택된 사용자 정보 저장
+    window.selectedUser = user;
+    
+    // 루나 관리 컨트롤 업데이트
+    const displayId = user.originalUserId || user.userId;
+    document.getElementById('selected-user-id').textContent = displayId;
+    document.getElementById('selected-user-luna').textContent = user.luna;
+    
+    // 루나 관리 패널 표시
+    const lunaControls = document.getElementById('luna-management-controls');
+    if (lunaControls) {
+        lunaControls.classList.remove('hidden');
+        lunaControls.style.display = 'block';
+    }
+    
+    console.log('루나 관리 패널 표시됨');
+}
+
+// 선택된 사용자에게 루나 추가
+async function addLunaToSelectedUser() {
+    console.log('addLunaToSelectedUser 호출됨');
+    console.log('window.selectedUser:', window.selectedUser);
+    
+    if (!window.selectedUser) {
+        console.log('사용자가 선택되지 않음');
+        alert('먼저 사용자를 선택해주세요.');
+        return;
+    }
+    
+    const amountInput = document.getElementById('luna-amount-input');
+    console.log('루나 입력 요소:', amountInput);
+    console.log('입력된 값:', amountInput ? amountInput.value : 'null');
+    
+    const amount = parseInt(amountInput.value);
+    console.log('파싱된 수량:', amount);
+    console.log('isNaN(amount):', isNaN(amount));
+    console.log('amount <= 0:', amount <= 0);
+    
+    if (isNaN(amount) || amount <= 0) {
+        console.log('올바르지 않은 수량');
+        alert('올바른 루나 수량을 입력해주세요.');
+        return;
+    }
+    
+    try {
+        const userRef = doc(db, 'users', window.selectedUser.id);
+        const newLuna = window.selectedUser.luna + amount;
+        
+        await updateDoc(userRef, {
+            luna: newLuna
+        });
+        
+        // UI 업데이트
+        window.selectedUser.luna = newLuna;
+        document.getElementById('selected-user-luna').textContent = newLuna;
+        
+        // 검색 결과도 업데이트
+        const selectedElement = document.querySelector('.user-result-item.selected .user-luna');
+        if (selectedElement) {
+            selectedElement.textContent = `${newLuna} 루나`;
+        }
+        
+        const displayId = window.selectedUser.originalUserId || window.selectedUser.userId;
+        alert(`${displayId}에게 ${amount} 루나를 추가했습니다.`);
+        document.getElementById('luna-amount-input').value = '';
+        
+        // 현재 사용자가 선택된 사용자와 같다면 헤더의 루나 표시도 업데이트
+        if (currentUser && currentUser.uid === window.selectedUser.id) {
+            const lunaAmountElement = document.getElementById('luna-amount');
+            if (lunaAmountElement) {
+                lunaAmountElement.textContent = newLuna;
+            }
+        }
+    } catch (error) {
+        console.error('루나 추가 오류:', error);
+        alert('루나 추가 중 오류가 발생했습니다.');
+    }
+}
+
+// 선택된 사용자에게서 루나 차감
+async function subtractLunaFromSelectedUser() {
+    console.log('subtractLunaFromSelectedUser 함수 호출됨');
+    console.log('window.selectedUser:', window.selectedUser);
+    
+    if (!window.selectedUser) {
+        alert('먼저 사용자를 선택해주세요.');
+        return;
+    }
+    
+    const lunaAmountElement = document.getElementById('luna-amount-input');
+    console.log('luna-amount-input 엘리먼트:', lunaAmountElement);
+    console.log('luna-amount-input 값:', lunaAmountElement ? lunaAmountElement.value : 'null');
+    
+    const amount = parseInt(document.getElementById('luna-amount-input').value);
+    console.log('파싱된 amount:', amount);
+    console.log('isNaN(amount):', isNaN(amount));
+    console.log('amount <= 0:', amount <= 0);
+    
+    if (isNaN(amount) || amount <= 0) {
+        alert('올바른 루나 수량을 입력해주세요.');
+        return;
+    }
+    
+    if (window.selectedUser.luna < amount) {
+        alert('사용자의 루나가 부족합니다.');
+        return;
+    }
+    
+    try {
+        const userRef = doc(db, 'users', window.selectedUser.id);
+        const newLuna = window.selectedUser.luna - amount;
+        
+        await updateDoc(userRef, {
+            luna: newLuna
+        });
+        
+        // UI 업데이트
+        window.selectedUser.luna = newLuna;
+        document.getElementById('selected-user-luna').textContent = newLuna;
+        
+        // 검색 결과도 업데이트
+        const selectedElement = document.querySelector('.user-result-item.selected .user-luna');
+        if (selectedElement) {
+            selectedElement.textContent = `${newLuna} 루나`;
+        }
+        
+        const displayId = window.selectedUser.originalUserId || window.selectedUser.userId;
+        alert(`${displayId}에게서 ${amount} 루나를 차감했습니다.`);
+        document.getElementById('luna-amount-input').value = '';
+        
+        // 현재 사용자가 선택된 사용자와 같다면 헤더의 루나 표시도 업데이트
+        if (currentUser && currentUser.uid === window.selectedUser.id) {
+            const lunaAmountElement = document.getElementById('luna-amount');
+            if (lunaAmountElement) {
+                lunaAmountElement.textContent = newLuna;
+            }
+        }
+    } catch (error) {
+        console.error('루나 차감 오류:', error);
+        alert('루나 차감 중 오류가 발생했습니다.');
+    }
+}
+
+// 전역 함수로 등록
+window.searchUsers = searchUsers;
+window.displaySearchResults = displaySearchResults;
+window.selectUser = selectUser;
+window.addLunaToSelectedUser = addLunaToSelectedUser;
+window.subtractLunaFromSelectedUser = subtractLunaFromSelectedUser;
+
+// 루나 새로고침 함수
+async function refreshLunaDisplay() {
+    if (!currentUser) return;
+    
+    try {
+        const userRef = doc(db, 'users', currentUser.uid);
+        const userDoc = await getDoc(userRef);
+        
+        if (userDoc.exists()) {
+            const userData = userDoc.data();
+            const lunaAmount = userData.luna || 0;
+            
+            // 헤더의 루나 표시 업데이트
+            const lunaAmountElement = document.getElementById('luna-amount');
+            if (lunaAmountElement) {
+                lunaAmountElement.textContent = lunaAmount;
+            }
+        }
+    } catch (error) {
+        console.error('루나 새로고침 오류:', error);
+        // 네트워크 오류는 일시적인 문제이므로 사용자에게 알리지 않음
+        if (error.code === 'unavailable' || error.message?.includes('QUIC_PROTOCOL_ERROR') || error.message?.includes('NAME_NOT_RESOLVED')) {
+            console.warn('네트워크 연결 문제로 인한 일시적 오류입니다.');
+        }
+    }
+}
+
+// 루나 관리 버튼 이벤트 리스너 등록
+function initializeLunaManagement() {
+    const addLunaBtn = document.getElementById('add-luna-btn');
+    const subtractLunaBtn = document.getElementById('subtract-luna-btn');
+    const refreshLunaBtn = document.getElementById('refresh-luna-btn');
+    
+    if (addLunaBtn) {
+        // 기존 이벤트 리스너 제거 후 새로 등록
+        addLunaBtn.removeEventListener('click', addLunaToSelectedUser);
+        addLunaBtn.addEventListener('click', addLunaToSelectedUser);
+    }
+    
+    if (subtractLunaBtn) {
+        // 기존 이벤트 리스너 제거 후 새로 등록
+        subtractLunaBtn.removeEventListener('click', subtractLunaFromSelectedUser);
+        subtractLunaBtn.addEventListener('click', subtractLunaFromSelectedUser);
+    }
+    
+    if (refreshLunaBtn) {
+        // 기존 이벤트 리스너 제거 후 새로 등록
+        refreshLunaBtn.removeEventListener('click', refreshLunaDisplay);
+        refreshLunaBtn.addEventListener('click', refreshLunaDisplay);
+    }
+}
+
+// 페이지 로드 완료 시 초기화
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+        initializeLunaDisplay();
+        initializeLunaManagement();
+    });
+} else {
+    initializeLunaDisplay();
+    initializeLunaManagement();
 }
