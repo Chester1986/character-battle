@@ -1124,6 +1124,8 @@ async function startBattleFromDetail(characterId) {
             // 매칭 화면으로 이동
             showView('matching');
             showMatchingScreen();
+            // 페이지 상단으로 스크롤
+            window.scrollTo(0, 0);
         } else {
             alert('전투할 상대가 없습니다. 다른 캐릭터를 생성해주세요.');
         }
@@ -1136,6 +1138,8 @@ async function startBattleFromDetail(characterId) {
 // 매칭 화면 표시
 function showMatchingScreen() {
     selectedSkills = []; // 스킬 선택 초기화
+    // 페이지 상단으로 스크롤
+    window.scrollTo(0, 0);
     
     matchingContent.innerHTML = `
         <div class="matching-container">
@@ -1362,6 +1366,9 @@ function startBattleScreen() {
     console.log('battleContent 요소:', battleContent);
     console.log('playerCharacterForBattle:', playerCharacterForBattle);
     console.log('opponentCharacterForBattle:', opponentCharacterForBattle);
+    
+    // 페이지 상단으로 스크롤
+    window.scrollTo(0, 0);
     
     // 돌아가기 버튼 제거됨
     
@@ -2269,6 +2276,9 @@ function displaySkillSelection() {
 
 // 매칭된 상대방 화면 표시 함수
 function showMatchedOpponentScreen() {
+    // 페이지 상단으로 스크롤
+    window.scrollTo(0, 0);
+    
     // 기존 전투 UI 숨기기
     const battleArenaContainer = document.getElementById('battle-arena-container');
     const battleControls = document.getElementById('battle-controls');
@@ -2838,6 +2848,9 @@ async function matchNewOpponent() {
 
 // 전투 포기 후 완전히 새로운 매칭 화면 표시 함수
 function showMatchedOpponentScreenFresh(opponent) {
+    // 페이지 상단으로 스크롤
+    window.scrollTo(0, 0);
+    
     // 기존 매칭 화면이 있다면 완전히 제거
     const existingMatchedScreen = document.getElementById('matched-opponent-screen');
     if (existingMatchedScreen) {
