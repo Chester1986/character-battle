@@ -456,7 +456,9 @@ generateCharacterBtn.addEventListener('click', async () => {
         - 이미지 프롬프트는 생성된 캐릭터의 클래스, 성격, 외형적 특징을 정확히 묘사해야 합니다.
         - 배경 이야기는 캐릭터의 탄생 배경과 상세 정보를 포함하여 3-4문장으로 작성하세요.
         - 성격은 핵심 특성 2-3가지로 요약하세요.
-        - 스킬 설명은 각각 1-2문장으로 명확하게 작성하세요.
+        - 스킬 설명은 각각 정확히 2문장으로 작성하되, 자연스럽고 적절한 길이로 작성하세요.
+        - 첫 번째 문장은 스킬 효과를 설명하고, 두 번째 문장은 '다만', '하지만', '그러나', '단' 등의 연결어를 사용하여 제약사항이나 부작용을 명확히 구분해서 작성하세요.
+        - 예시: "상대방의 약점이나 감정의 동요를 읽어내어 심리적인 압박을 가하거나, 혼란을 야기합니다. 다만, 순수한 마음을 가진 이에게는 효과가 미미합니다"
         - 특히 거미 관련 컨셉의 경우, 거미의 특성(독, 거미줄, 민첩성, 다리 등)을 반영한 캐릭터를 만들어주세요.
         
         결과는 반드시 다음 JSON 형식에 맞춰서 한글로 작성해주세요. image_prompt만 영어로 작성해주세요:
@@ -3465,7 +3467,7 @@ async function startTurnBasedBattleNew() {
         await sleep(2000);
         
         console.log('최종 판결 요청 중...');
-        finalResult = await getFinalVerdict(battleData.player, battleData.opponent, battleTurns);
+        finalResult = await getFinalVerdict(battleData.player, battleData.opponent, selectedSkills, opponentSkills, battleTurns);
         console.log('최종 결과:', finalResult);
         
         // 최종 결과는 게이지 상태 텍스트로만 표시
@@ -3806,7 +3808,7 @@ async function saveBattleRecord(winnerData, loserData, battleData) {
     }
 }
 
-async function updateWinsLosses(winnerId, loserId, battleData = null) {
+async function updateWinsLosses(winnerId, loserId) {
     try {
         console.log('updateWinsLosses 시작 - winnerId:', winnerId, 'loserId:', loserId);
         
@@ -3842,56 +3844,8 @@ async function updateWinsLosses(winnerId, loserId, battleData = null) {
             transaction.update(winnerRef, { wins: newWins });
             transaction.update(loserRef, { losses: newLosses });
             
-            // 전투 기록도 트랜잭션 내에서 동시에 저장
-            if (battleData) {
-                console.log('전투 기록 저장 시작 (트랜잭션 내)');
-                const winnerData = { id: winnerId, ...battleData.winner };
-                const loserData = { id: loserId, ...battleData.loser };
-                
-                const battleRecord = {
-                    winnerId: winnerData.id,
-                    winnerName: winnerData.name,
-                    winnerImage: winnerData.imageUrl,
-                    loserId: loserData.id,
-                    loserName: loserData.name,
-                    loserImage: loserData.imageUrl,
-                    battleDate: new Date().toISOString(),
-                    playerSkills: battleData.playerSkills || [],
-                    opponentSkills: battleData.opponentSkills || [],
-                    createdAt: new Date().toISOString()
-                };
-                
-                // 승자의 전투 기록
-                const winnerBattleRecord = {
-                    ...battleRecord,
-                    result: 'win',
-                    opponentId: loserData.id,
-                    opponentName: loserData.name,
-                    opponentImage: loserData.imageUrl
-                };
-                
-                // 패자의 전투 기록
-                const loserBattleRecord = {
-                    ...battleRecord,
-                    result: 'lose',
-                    opponentId: winnerData.id,
-                    opponentName: winnerData.name,
-                    opponentImage: winnerData.imageUrl
-                };
-                
-                // 전체 전투 기록 저장
-                const battleRef = doc(collection(db, 'battles'));
-                transaction.set(battleRef, battleRecord);
-                
-                // 각 캐릭터의 개별 전투 기록 저장
-                const winnerBattleHistoryRef = doc(collection(winnerRef, 'battleHistory'));
-                const loserBattleHistoryRef = doc(collection(loserRef, 'battleHistory'));
-                
-                transaction.set(winnerBattleHistoryRef, winnerBattleRecord);
-                transaction.set(loserBattleHistoryRef, loserBattleRecord);
-                
-                console.log('전투 기록이 트랜잭션에 포함되었습니다.');
-            }
+            // 전투 기록 저장은 별도의 saveBattleRecord 함수에서 처리됨 (중복 방지)
+            console.log('전투 기록은 별도 함수에서 처리됩니다.');
         });
         
         console.log('승패기록과 전투기록이 동시에 저장되었습니다.');
@@ -4031,7 +3985,7 @@ async function updateCharacterStats(winner, loser) {
         };
         
         console.log('updateWinsLosses 호출 전');
-        await updateWinsLosses(winnerId, loserId, battleData);
+        await updateWinsLosses(winnerId, loserId);
         console.log('updateWinsLosses 호출 완료');
         
         // 루나 지급은 updateWinsLosses 함수에서 처리됨
@@ -4132,17 +4086,29 @@ async function generateAndShowNovelLog() {
         The story must be conclusive and reflect the final winner.
         
         **IMPORTANT: You MUST include the actual skill names used in the battle within the story narrative.**
+        **Use the character backgrounds to create meaningful connections, rivalries, or philosophical conflicts that drive the battle narrative.**
 
         - Character 1 (Player): ${player.name} (${player.class})
           - Used Skills: ${playerSkillNames}
           - Personality: ${player.personality}
+          - Background Story: ${player.story || '알려지지 않은 과거'}
+          - Origin Story: ${player.origin_story || '신비로운 기원'}
         - Character 2 (Opponent): ${opponent.name} (${opponent.class})
           - Used Skills: ${opponentSkillNames}
           - Personality: ${opponent.personality}
+          - Background Story: ${opponent.story || '알려지지 않은 과거'}
+          - Origin Story: ${opponent.origin_story || '신비로운 기원'}
         - Battle Log (Turn by Turn):\n${battleTurns.join('\n')}
         - Final Winner: ${winner.name}
 
-        Please write the story in a compelling, narrative style. Make sure to mention the specific skill names (${playerSkillNames}, ${opponentSkillNames}) as they are used during the battle. Do not just list the events.
+        Please write the story in a compelling, narrative style that:
+        1. Reflects how each character's past experiences influence their combat style and decisions
+        2. Shows how their backgrounds create tension or connection between them
+        3. Includes dialogue that reveals their philosophies and motivations
+        4. Describes their reactions to victory/defeat based on their personal history
+        5. Makes sure to mention the specific skill names (${playerSkillNames}, ${opponentSkillNames}) as they are used during the battle
+        
+        Do not just list the events - weave their stories into a meaningful narrative.
     `;
 
     try {
@@ -4350,7 +4316,7 @@ async function startTurnBasedBattle(player, opponent) {
         
         dynamicMessageElement.textContent = additionalMessages[Math.floor(Math.random() * additionalMessages.length)];
         
-        const finalResult = await getFinalVerdict(player, opponent, battleTurns);
+        const finalResult = await getFinalVerdict(player, opponent, selectedSkills, opponentSkills, battleTurns);
 
         let winner, loser;
         if (finalResult.winner_name === player.name) {
@@ -4431,7 +4397,7 @@ async function startTurnBasedBattle(player, opponent) {
 
 // runBattleTurn 함수는 더 이상 사용하지 않음 (미리 정의된 메시지 사용으로 대체)
 
-async function getFinalVerdict(player, opponent, battleTurns) {
+async function getFinalVerdict(player, opponent, playerSkills, opponentSkills, battleTurns) {
     // 전투 중단 체크
     if (!window.battleInProgress) {
         console.log('getFinalVerdict: 전투가 중단되었습니다.');
@@ -4442,14 +4408,33 @@ async function getFinalVerdict(player, opponent, battleTurns) {
     }
     
     const prompt = `
-        You are the ultimate judge. Based on the turn-by-turn log of the battle, you must declare a winner.
+        당신은 전투 심판관입니다. 다음 정보를 종합하여 승자를 결정하세요.
 
-        Battle Log:
+        전투 참가자:
+        - ${player.name}:
+          스킬1: ${playerSkills[0].name} - ${playerSkills[0].description}
+          스킬2: ${playerSkills[1].name} - ${playerSkills[1].description}
+          
+        - ${opponent.name}:
+          스킬1: ${opponentSkills[0].name} - ${opponentSkills[0].description}
+          스킬2: ${opponentSkills[1].name} - ${opponentSkills[1].description}
+
+        판정 원칙:
+        1. 스킬 설명을 문자 그대로 해석하되 게임 밸런스 고려
+        2. '절대', '무적' 등은 합리적 한계 내에서 해석
+        3. 창의적이고 구체적인 스킬일수록 높은 효과
+        4. 2개 스킬의 조합과 시너지 효과 중요
+        5. 논리적 모순 시 능동적 스킬 > 수동적 스킬
+        6. 무승부 금지, 반드시 승자 결정
+
+        전투 로그:
         ${battleTurns.join('\n')}
 
-        Your task is to return a single, stringified JSON object with two keys: "winner_name" and "battle_summary".
-        - "winner_name": The name of the character who you declare the winner. Must be either "${player.name}" or "${opponent.name}".
-        - "battle_summary": A short, conclusive summary (in Korean, 1-2 sentences) explaining WHY you chose the winner based on the flow of the battle.
+        위 원칙에 따라 스킬 효과를 종합 판단하여 승자를 결정하세요.
+        
+        응답은 반드시 다음 형식의 JSON 객체로 해주세요:
+        {"winner_name": "승자 이름", "battle_summary": "승리 이유 (한국어, 1-2문장)"}
+        승자 이름은 반드시 "${player.name}" 또는 "${opponent.name}" 중 하나여야 합니다.
     `;
 
     const result = await generateWithFallback(prompt);
@@ -6111,12 +6096,16 @@ async function generateUpgradedSkill(originalSkill, characterData) {
 업그레이드 요구사항:
 1. 원본 스킬의 컨셉과 테마를 유지하면서 더 강력하게 만들어주세요
 2. 스킬 이름도 업그레이드된 느낌으로 변경해주세요
-3. 설명은 1-2문장으로 간결하게 작성하고, 더 강력해진 효과를 반영해주세요
+3. 설명은 정확히 2문장으로 작성하되, 기존 스킬 설명과 비슷한 길이를 유지하세요
+4. 첫 번째 문장은 강력한 효과를 설명하고, 두 번째 문장은 '다만', '하지만', '그러나', '단' 등의 연결어를 사용하여 제약사항을 명확히 구분해서 작성하세요
+5. 기존 스킬의 핵심 컨셉은 유지하되, 효과의 강도나 범위만 업그레이드하여 설명 길이가 누진적으로 늘어나지 않도록 하세요
+6. 기존 설명 길이를 참고하여 비슷한 분량으로 작성하되, 내용은 더 강력하게 표현하세요
+7. 예시: "상대방의 약점이나 감정의 동요를 읽어내어 심리적인 압박을 가하거나, 혼란을 야기합니다. 다만, 순수한 마음을 가진 이에게는 효과가 미미합니다"
 
 다음 JSON 형식으로만 응답해주세요:
 {
   "name": "업그레이드된 스킬 이름",
-  "description": "업그레이드된 스킬 설명 (1-2문장)"
+  "description": "업그레이드된 스킬 설명 (2문장, 자연스러운 길이, 제약사항에 연결어 사용)"
 }`;
     
     console.log('🔧 [DEBUG] AI 프롬프트 생성 완료, generateWithFallback 호출');
@@ -6169,12 +6158,14 @@ ${((skillType === 'attack' ? characterData.attackSkills : characterData.defenseS
 1. 캐릭터의 컨셉과 스토리에 맞는 ${skillType === 'attack' ? '공격' : '방어'} 스킬을 만들어주세요
 2. 기존 스킬들과 중복되지 않는 독특한 스킬을 만들어주세요
 3. 스킬 이름과 설명은 창의적이고 흥미롭게 작성해주세요
-4. 스킬 설명은 1-2문장으로 간결하게 작성해주세요
+4. 설명은 정확히 2문장으로 작성하되, 자연스럽고 적절한 길이로 작성하세요
+5. 첫 번째 문장은 스킬 효과를 설명하고, 두 번째 문장은 '다만', '하지만', '그러나', '단' 등의 연결어를 사용하여 제약사항을 명확히 구분해서 작성하세요
+6. 예시: "상대방의 약점이나 감정의 동요를 읽어내어 심리적인 압박을 가하거나, 혼란을 야기합니다. 다만, 순수한 마음을 가진 이에게는 효과가 미미합니다"
 
 다음 JSON 형식으로만 응답해주세요:
 {
   "name": "새 스킬 이름",
-  "description": "새 스킬 설명 (1-2문장)"
+  "description": "새 스킬 설명 (2문장, 자연스러운 길이, 제약사항에 연결어 사용)"
 }`;
     
     try {
