@@ -459,7 +459,7 @@ generateCharacterBtn.addEventListener('click', async () => {
         - 스킬 설명은 각각 정확히 2문장으로 작성하되, 자연스럽고 적절한 길이로 작성하세요.
         - 첫 번째 문장은 스킬 효과를 설명하고, 두 번째 문장은 '다만', '하지만', '그러나', '단' 등의 연결어를 사용하여 제약사항이나 부작용을 명확히 구분해서 작성하세요.
         - 예시: "상대방의 약점이나 감정의 동요를 읽어내어 심리적인 압박을 가하거나, 혼란을 야기합니다. 다만, 순수한 마음을 가진 이에게는 효과가 미미합니다"
-        - 특히 거미 관련 컨셉의 경우, 거미의 특성(독, 거미줄, 민첩성, 다리 등)을 반영한 캐릭터를 만들어주세요.
+
         
         결과는 반드시 다음 JSON 형식에 맞춰서 한글로 작성해주세요. image_prompt만 영어로 작성해주세요:
         {
@@ -547,9 +547,13 @@ generateCharacterBtn.addEventListener('click', async () => {
         parsedData.losses = 0;
         parsedData.owner = currentUser.uid;
         parsedData.createdBy = currentUser.uid;
+        parsedData.userId = currentUser.uid; // 재생성 버튼에서 사용하는 필드
         parsedData.createdAt = new Date().toISOString();
         // 외형 프롬프트를 별도로 저장 (전투 이미지 생성에 활용)
         parsedData.appearance_prompt = parsedData.image_prompt;
+        // 강화된 프롬프트도 저장 (이미지 재생성에 활용)
+        const conceptKeywords = getConceptKeywords(charConcept);
+        parsedData.enhanced_prompt = `${parsedData.image_prompt}, ${conceptKeywords}, fantasy character portrait, ${parsedData.class || 'fantasy character'}, high quality, detailed, digital art, concept art style, professional illustration, centered composition, dramatic lighting, vibrant colors, masterpiece quality, full body or portrait view`;
         await addDoc(collection(db, `users/${currentUser.uid}/characters`), parsedData);
         updateProgress(100, `${parsedData.name} 탄생 완료!`);
         
@@ -626,23 +630,28 @@ async function callImageGenerationApi(prompt) {
     }
 }
 
-// ...
-async function generateAndUploadImage(imagePrompt, characterName, characterClass, characterConcept) {
-    console.log(`Generating image for ${characterName} with AI...`);
-    
-    // 컨셉에 따른 특별한 프롬프트 처리
+// 컨셉에 따른 키워드 생성 함수
+function getConceptKeywords(characterConcept) {
     let conceptKeywords = '';
     const lowerConcept = characterConcept.toLowerCase();
     
-    if (lowerConcept.includes('거미') || lowerConcept.includes('spider')) {
-        conceptKeywords = 'spider-themed character, arachnid features, web patterns, eight legs or spider-like appendages, dark fantasy';
-    } else if (lowerConcept.includes('용') || lowerConcept.includes('dragon')) {
+    if (lowerConcept.includes('용') || lowerConcept.includes('dragon')) {
         conceptKeywords = 'dragon-themed character, draconic features, scales, wings, fire elements';
     } else if (lowerConcept.includes('마법사') || lowerConcept.includes('wizard') || lowerConcept.includes('mage')) {
         conceptKeywords = 'wizard character, magical robes, staff or wand, mystical aura, spell effects';
     } else if (lowerConcept.includes('전사') || lowerConcept.includes('warrior') || lowerConcept.includes('knight')) {
         conceptKeywords = 'warrior character, armor, sword and shield, heroic pose, battle-ready';
     }
+    
+    return conceptKeywords;
+}
+
+// ...
+async function generateAndUploadImage(imagePrompt, characterName, characterClass, characterConcept) {
+    console.log(`Generating image for ${characterName} with AI...`);
+    
+    // 컨셉에 따른 특별한 프롬프트 처리
+    const conceptKeywords = getConceptKeywords(characterConcept);
     
     // 강화된 이미지 프롬프트 생성
     const enhancedPrompt = `${imagePrompt}, ${conceptKeywords}, fantasy character portrait, ${characterClass || 'fantasy character'}, high quality, detailed, digital art, concept art style, professional illustration, centered composition, dramatic lighting, vibrant colors, masterpiece quality, full body or portrait view`;
@@ -683,7 +692,7 @@ async function loadUserCharacters() {
         
         const userCharacters = [];
         userSnapshot.forEach((doc) => {
-            userCharacters.push({ id: doc.id, ...doc.data() });
+            userCharacters.push({ id: doc.id, userId: currentUser.uid, ...doc.data() });
         });
         
         // 전체 캐릭터에서 현재 사용자가 만든 캐릭터 찾기 (과거 테스트 캐릭터 포함)
@@ -694,7 +703,8 @@ async function loadUserCharacters() {
             const charData = doc.data();
             // 현재 사용자가 만든 캐릭터이지만 사용자 컬렉션에 없는 경우 추가
             if (charData.createdBy === currentUser.uid && !userCharacters.find(c => c.id === doc.id)) {
-                userCharacters.push({ id: doc.id, ...charData });
+                // userId 필드 추가
+                userCharacters.push({ id: doc.id, userId: currentUser.uid, ...charData });
             }
         });
         
@@ -764,7 +774,7 @@ function createMainCharacterCard(character) {
 
     card.innerHTML = `
         <div class="character-image-container">
-            <img src="${character.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image'}" alt="${character.name}" class="character-image" onerror="this.src='https://placehold.co/512x512/EEE/31343C.png?text=Error'">
+            <img src="${(character.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image') + (character.imageUrl && !character.imageUrl.startsWith('data:') ? '?t=' + new Date().getTime() : '')}" alt="${character.name}" class="character-image" onerror="this.src='https://placehold.co/512x512/EEE/31343C.png?text=Error'">
         </div>
         <div class="character-info">
             <h3 class="character-name">${character.name}</h3>
@@ -794,7 +804,7 @@ function createCharacterCard(character, type) {
     
     // Correct placeholder URL and image handling
     card.innerHTML = `
-        <img src="${character.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image'}" alt="${character.name}" class="character-card-image" onerror="this.src='https://placehold.co/512x512/EEE/31343C.png?text=Error'">
+        <img src="${(character.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image') + (character.imageUrl && !character.imageUrl.startsWith('data:') ? '?t=' + new Date().getTime() : '')}" alt="${character.name}" class="character-card-image" onerror="this.src='https://placehold.co/512x512/EEE/31343C.png?text=Error'">
         <h3>${character.name}</h3>
         <p class="character-class">${character.class || '클래스 정보 없음'}</p>
         <p class="character-personality"><strong>성격:</strong> ${character.personality || '정보 없음'}</p>
@@ -833,6 +843,275 @@ function createCharacterCard(character, type) {
     return card;
 }
 
+// 캐릭터 이미지 재생성 함수
+window.regenerateCharacterImage = async function(characterId) {
+    console.log('캐릭터 이미지 재생성 시작:', characterId);
+    
+    if (!currentUser) {
+        alert('로그인이 필요합니다.');
+        return;
+    }
+    
+    const LUNA_COST = 30;
+    
+    try {
+        // 현재 루나 잔액 확인
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        const userDoc = await getDoc(userDocRef);
+        
+        if (!userDoc.exists()) {
+            alert('사용자 정보를 찾을 수 없습니다.');
+            return;
+        }
+        
+        const currentLuna = userDoc.data().luna || 0;
+        
+        if (currentLuna < LUNA_COST) {
+            alert(`루나가 부족합니다. 필요: ${LUNA_COST} 루나, 보유: ${currentLuna} 루나`);
+            return;
+        }
+        
+        // 캐릭터 데이터 가져오기
+        const characterRef = await findCharacterRef(characterId);
+        if (!characterRef) {
+            alert('캐릭터 정보를 찾을 수 없습니다.');
+            return;
+        }
+        
+        const characterSnap = await getDoc(characterRef);
+        if (!characterSnap.exists()) {
+            alert('캐릭터 정보를 찾을 수 없습니다.');
+            return;
+        }
+        
+        const characterData = characterSnap.data();
+        
+        // 소유권 확인 (fallback 로직 포함)
+        let characterOwnerId = characterData.userId;
+        if (!characterOwnerId) {
+            // userId가 없는 경우, 캐릭터가 현재 사용자의 subcollection에 있는지 확인
+            try {
+                const userCharRef = doc(db, `users/${currentUser.uid}/characters`, characterId);
+                const userCharSnap = await getDoc(userCharRef);
+                if (userCharSnap.exists()) {
+                    characterOwnerId = currentUser.uid;
+                    console.log('userId가 없는 캐릭터이지만 현재 사용자의 subcollection에서 발견됨 (재생성)');
+                }
+            } catch (error) {
+                console.log('사용자 subcollection 확인 중 오류 (재생성):', error);
+            }
+        }
+        
+        if (characterOwnerId !== currentUser.uid) {
+            alert('자신의 캐릭터만 이미지를 재생성할 수 있습니다.');
+            return;
+        }
+        
+        // 사용자 확인
+        const confirmMessage = `${LUNA_COST}루나를 소모하여 "${characterData.name}"의 이미지를 재생성하시겠습니까?`;
+        if (!confirm(confirmMessage)) {
+            return;
+        }
+        
+        // 재생성 버튼 비활성화 및 로딩 표시
+        const regenerateBtn = document.querySelector('.regenerate-image-btn');
+        if (regenerateBtn) {
+            regenerateBtn.disabled = true;
+            regenerateBtn.innerHTML = '⏳';
+        }
+        
+        // 루나 차감
+        const success = await spendLuna(LUNA_COST);
+        if (!success) {
+            alert('루나 차감에 실패했습니다.');
+            if (regenerateBtn) {
+                regenerateBtn.disabled = false;
+                regenerateBtn.innerHTML = '🔄';
+            }
+            return;
+        }
+        
+        console.log('루나 차감 완료, 이미지 생성 시작');
+        
+        // 저장된 강화된 프롬프트 사용, 없으면 기본 프롬프트 생성
+        let imagePrompt;
+        if (characterData.enhanced_prompt) {
+            imagePrompt = characterData.enhanced_prompt;
+            console.log('저장된 강화된 프롬프트 사용:', imagePrompt.substring(0, 100) + '...');
+        } else {
+            // 기존 방식으로 프롬프트 생성 (하위 호환성)
+            imagePrompt = `A detailed fantasy character portrait: ${characterData.appearance || characterData.story || characterData.name}. High quality, fantasy art style, detailed character design, professional digital art.`;
+            console.log('기본 프롬프트 생성 (강화된 프롬프트 없음):', imagePrompt);
+        }
+        
+        console.log('이미지 생성 프롬프트:', imagePrompt);
+        
+        // 이미지 생성 API 호출
+        const response = await fetch('/api/generate-image', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                prompt: imagePrompt,
+                characterName: characterData.name
+            })
+        });
+        
+        if (!response.ok) {
+            throw new Error(`이미지 생성 실패: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        
+        if (!result.success || !result.imageUrl) {
+            throw new Error('이미지 생성 결과가 올바르지 않습니다.');
+        }
+        
+        console.log('새 이미지 생성 완료:', result.imageUrl);
+        
+        // Firebase에 새 이미지 URL 업데이트
+        await updateDoc(characterRef, {
+            imageUrl: result.imageUrl,
+            lastImageUpdate: new Date().toISOString()
+        });
+        
+        console.log('Firebase 업데이트 완료');
+        
+        // 캐시 업데이트
+        console.log('=== 캐시 업데이트 시작 ===');
+        console.log('allCharactersCache 존재 여부:', !!allCharactersCache);
+        console.log('allCharactersCache 길이:', allCharactersCache ? allCharactersCache.length : 'undefined');
+        console.log('대상 캐릭터 ID:', characterId);
+        console.log('새 이미지 URL:', result.imageUrl);
+        
+        if (allCharactersCache && allCharactersCache.length > 0) {
+            const cachedCharacterIndex = allCharactersCache.findIndex(c => c.id === characterId);
+            console.log('캐시에서 찾은 캐릭터 인덱스:', cachedCharacterIndex);
+            if (cachedCharacterIndex !== -1) {
+                console.log('업데이트 전 이미지 URL:', allCharactersCache[cachedCharacterIndex].imageUrl);
+                allCharactersCache[cachedCharacterIndex].imageUrl = result.imageUrl;
+                console.log('캐시된 캐릭터 데이터 업데이트 완료:', allCharactersCache[cachedCharacterIndex].name);
+                console.log('업데이트 후 이미지 URL:', allCharactersCache[cachedCharacterIndex].imageUrl);
+            } else {
+                console.log('캐시에서 해당 캐릭터를 찾을 수 없음');
+            }
+        } else {
+            console.log('캐시가 비어있거나 존재하지 않음');
+        }
+        
+        // UI 즉시 업데이트 (캐시 버스팅 적용) - 모든 이미지 요소 업데이트
+        const timestamp = new Date().getTime();
+        const cacheBustingUrl = result.imageUrl.startsWith('data:') ? result.imageUrl : result.imageUrl + '?t=' + timestamp;
+        
+        // 캐릭터 데이터 가져오기
+        const targetCharacterData = allCharactersCache.find(c => c.id === characterId);
+        if (!targetCharacterData) {
+            console.error('캐릭터 데이터를 찾을 수 없습니다:', characterId);
+            return;
+        }
+        
+        // 현재 표시된 캐릭터 상세 페이지가 재생성된 캐릭터와 일치하는지 확인
+        const currentDetailCharacter = document.querySelector('.character-detail-container');
+        const currentCharacterName = detailCharacterName ? detailCharacterName.textContent : '';
+        const isCurrentCharacterDetail = currentDetailCharacter && 
+            (currentCharacterName === targetCharacterData.name || 
+             document.querySelector(`[onclick*="${characterId}"]`));
+        
+        console.log('=== 이미지 업데이트 디버깅 ===');
+        console.log('현재 상세 페이지 캐릭터명:', currentCharacterName);
+        console.log('재생성된 캐릭터명:', targetCharacterData.name);
+        console.log('상세 페이지 일치 여부:', isCurrentCharacterDetail);
+        
+        // 캐릭터 상세 페이지의 이미지 업데이트 (현재 표시된 캐릭터가 재생성된 캐릭터인 경우에만)
+        if (isCurrentCharacterDetail) {
+            const characterImages = document.querySelectorAll('.character-image-container img');
+            console.log('상세 페이지 이미지 요소들:', characterImages);
+            characterImages.forEach(img => {
+                // alt 속성으로 캐릭터 확인 후 업데이트 (정확히 일치하는 경우만)
+                console.log('이미지 alt 속성:', img.alt, '비교 대상:', targetCharacterData.name);
+                if (img.alt === targetCharacterData.name) {
+                    img.src = cacheBustingUrl;
+                    console.log('상세 페이지 이미지 요소 업데이트:', img, cacheBustingUrl);
+                } else {
+                    console.log('이미지 alt가 일치하지 않아 업데이트 건너뜀:', img.alt);
+                }
+            });
+        }
+        
+        // 중복된 캐시 업데이트 코드 제거됨 (위에서 이미 처리됨)
+        
+        // 캐릭터 카드의 이미지도 업데이트 (data-character-id로 정확한 캐릭터만)
+        const cardImages = document.querySelectorAll(`[data-character-id="${characterId}"] img`);
+        console.log('=== 캐릭터 카드 이미지 업데이트 ===');
+        console.log('찾은 카드 이미지 요소들:', cardImages);
+        console.log('검색한 셀렉터:', `[data-character-id="${characterId}"] img`);
+        cardImages.forEach(img => {
+            img.src = cacheBustingUrl;
+            console.log('카드 이미지 요소 업데이트:', img, cacheBustingUrl);
+        });
+        
+        // 메인 캐릭터 목록에서 해당 캐릭터 이미지 업데이트
+        const mainCharacterImages = document.querySelectorAll('.character-image');
+        console.log('=== 메인 캐릭터 목록 이미지 업데이트 ===');
+        console.log('찾은 메인 이미지 요소들:', mainCharacterImages);
+        console.log('대상 캐릭터명:', targetCharacterData.name);
+        mainCharacterImages.forEach(img => {
+            console.log('이미지 alt 속성 확인:', img.alt, '비교 대상:', targetCharacterData.name);
+            if (img.alt === targetCharacterData.name) {
+                img.src = cacheBustingUrl;
+                console.log('메인 목록 이미지 요소 업데이트:', img, cacheBustingUrl);
+            } else {
+                console.log('alt 속성이 일치하지 않아 업데이트 건너뜀:', img.alt);
+            }
+        });
+        
+        console.log('모든 이미지 UI 업데이트 완료:', cacheBustingUrl);
+        
+        // 강제로 이미지 새로고침 (업데이트된 이미지들만)
+        setTimeout(() => {
+            const allUpdatedImages = [
+                ...document.querySelectorAll(`[data-character-id="${characterId}"] img`),
+                ...Array.from(document.querySelectorAll('.character-image')).filter(img => img.alt === targetCharacterData.name)
+            ];
+            if (isCurrentCharacterDetail) {
+                // 상세 페이지에서도 정확한 캐릭터만 추가
+                const detailImages = Array.from(document.querySelectorAll('.character-image-container img'))
+                    .filter(img => img.alt === targetCharacterData.name);
+                allUpdatedImages.push(...detailImages);
+            }
+            
+            console.log('강제 새로고침 대상 이미지들:', allUpdatedImages);
+            allUpdatedImages.forEach(img => {
+                img.style.display = 'none';
+                img.offsetHeight; // 강제 리플로우
+                img.style.display = '';
+            });
+        }, 100);
+        
+        // 재생성 버튼 복원
+        if (regenerateBtn) {
+            regenerateBtn.disabled = false;
+            regenerateBtn.innerHTML = '🔄';
+        }
+        
+        alert('이미지가 성공적으로 재생성되었습니다!');
+        
+        console.log('이미지 재생성 완료');
+        
+    } catch (error) {
+        console.error('이미지 재생성 오류:', error);
+        alert('이미지 재생성 중 오류가 발생했습니다: ' + error.message);
+        
+        // 재생성 버튼 복원
+        const regenerateBtn = document.querySelector('.regenerate-image-btn');
+        if (regenerateBtn) {
+            regenerateBtn.disabled = false;
+            regenerateBtn.innerHTML = '🔄';
+        }
+    }
+}
+
 // 캐릭터 상세 정보 표시
 async function showCharacterDetail(character) {
     console.log('showCharacterDetail 호출됨, 캐릭터 ID:', character.id);
@@ -840,16 +1119,21 @@ async function showCharacterDetail(character) {
     // 페이지 상단으로 스크롤
     window.scrollTo(0, 0);
     
-    // Firebase에서 최신 캐릭터 데이터 가져오기
+    // Firebase에서 최신 캐릭터 데이터 가져오기 (올바른 경로 사용)
     let latestCharacter = character;
     try {
-        const characterRef = doc(db, 'characters', character.id);
-        const characterSnap = await getDoc(characterRef);
-        if (characterSnap.exists()) {
-            latestCharacter = { id: characterSnap.id, ...characterSnap.data() };
-            console.log('Firebase에서 최신 캐릭터 데이터 가져옴:', latestCharacter.name);
+        const characterRef = await findCharacterRef(character.id);
+        if (characterRef) {
+            const characterSnap = await getDoc(characterRef);
+            if (characterSnap.exists()) {
+                latestCharacter = { id: characterSnap.id, ...characterSnap.data() };
+                console.log('Firebase에서 최신 캐릭터 데이터 가져옴:', latestCharacter.name);
+                console.log('캐릭터 소유자 ID (Firebase):', latestCharacter.userId);
+            } else {
+                console.log('Firebase에서 캐릭터를 찾을 수 없음, 캐시된 데이터 사용');
+            }
         } else {
-            console.log('Firebase에서 캐릭터를 찾을 수 없음, 캐시된 데이터 사용');
+            console.log('캐릭터 참조를 찾을 수 없음, 캐시된 데이터 사용');
         }
     } catch (error) {
         console.error('Firebase에서 캐릭터 데이터 가져오기 실패:', error);
@@ -883,12 +1167,39 @@ async function showCharacterDetail(character) {
     // 최근 전투 기록 가져오기
     const recentBattles = await getRecentBattles(latestCharacter.id);
     
+    // userId가 없는 기존 캐릭터를 위한 fallback 로직
+    let characterOwnerId = latestCharacter.userId;
+    if (!characterOwnerId) {
+        // userId가 없는 경우, 캐릭터가 현재 사용자의 subcollection에 있는지 확인
+        try {
+            const userCharRef = doc(db, `users/${currentUser.uid}/characters`, character.id);
+            const userCharSnap = await getDoc(userCharRef);
+            if (userCharSnap.exists()) {
+                characterOwnerId = currentUser.uid;
+                console.log('userId가 없는 캐릭터이지만 현재 사용자의 subcollection에서 발견됨');
+            }
+        } catch (error) {
+            console.log('사용자 subcollection 확인 중 오류:', error);
+        }
+    }
+    
+    // 디버깅 정보 출력
+    console.log('=== 재생성 버튼 표시 조건 확인 ===');
+    console.log('캐릭터 소유자 ID (원본):', latestCharacter.userId);
+    console.log('캐릭터 소유자 ID (fallback 적용):', characterOwnerId);
+    console.log('현재 사용자 ID:', currentUser?.uid);
+    console.log('현재 사용자 객체:', currentUser);
+    console.log('소유권 일치 여부:', characterOwnerId === currentUser?.uid);
+    
     characterDetailContent.innerHTML = `
         <div class="character-detail-container">
             <!-- 캐릭터 이미지 섹션 -->
             <div class="character-detail-header">
-                <div class="character-image-container" onclick="openImageModal('${latestCharacter.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image'}', '${latestCharacter.name}')">
-                    <img src="${latestCharacter.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image'}" alt="${latestCharacter.name}" onerror="this.src='https://placehold.co/512x512/EEE/31343C.png?text=Error'">
+                <div class="character-image-section">
+                    <div class="character-image-container" onclick="openImageModal('${latestCharacter.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image'}', '${latestCharacter.name}')">
+                        <img src="${(latestCharacter.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image') + (latestCharacter.imageUrl && !latestCharacter.imageUrl.startsWith('data:') ? '?t=' + new Date().getTime() : '')}" alt="${latestCharacter.name}" onerror="this.src='https://placehold.co/512x512/EEE/31343C.png?text=Error'">
+                    </div>
+                    <!-- 재생성 버튼 완전히 제거됨 -->
                 </div>
                 <div class="character-basic-info">
                     <h2>${latestCharacter.name}</h2>
@@ -1759,7 +2070,16 @@ async function getAllCharactersForRanking() {
         const charactersSnapshot = await getDocs(collectionGroup(db, 'characters'));
         const characters = [];
         charactersSnapshot.forEach((doc) => {
-            characters.push({ id: doc.id, ...doc.data() });
+            // userId 추출
+            let userId = 'unknown';
+            try {
+                if (doc.ref && doc.ref.parent && doc.ref.parent.parent) {
+                    userId = doc.ref.parent.parent.id;
+                }
+            } catch (refError) {
+                console.warn('Could not extract user ID for:', doc.id);
+            }
+            characters.push({ id: doc.id, userId: userId, ...doc.data() });
         });
         return characters;
     } catch (error) {
@@ -1928,7 +2248,18 @@ async function fetchAllCharacters() {
     try {
         const q = query(collectionGroup(db, 'characters'));
         const querySnapshot = await getDocs(q);
-        allCharactersCache = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        allCharactersCache = querySnapshot.docs.map(doc => {
+            // userId 추출
+            let userId = 'unknown';
+            try {
+                if (doc.ref && doc.ref.parent && doc.ref.parent.parent) {
+                    userId = doc.ref.parent.parent.id;
+                }
+            } catch (refError) {
+                console.warn('Could not extract user ID for:', doc.id);
+            }
+            return { id: doc.id, userId: userId, ...doc.data() };
+        });
         console.log(`Cached ${allCharactersCache.length} characters.`);
     } catch (error) {
         console.error("Error caching all characters: ", error);
@@ -3062,7 +3393,7 @@ async function loadCharactersForArena() {
         
         const userCharacters = [];
         userSnapshot.forEach((doc) => {
-            userCharacters.push({ id: doc.id, ...doc.data() });
+            userCharacters.push({ id: doc.id, userId: currentUser.uid, ...doc.data() });
         });
         
         // 전체 캐릭터에서 현재 사용자가 만든 캐릭터 찾기
@@ -3074,7 +3405,8 @@ async function loadCharactersForArena() {
             if (charData.createdBy === currentUser.uid) {
                 const existingChar = userCharacters.find(c => c.id === doc.id);
                 if (!existingChar) {
-                    userCharacters.push({ id: doc.id, ...charData });
+                    // userId 필드 추가
+                    userCharacters.push({ id: doc.id, userId: currentUser.uid, ...charData });
                 }
             }
         });
@@ -3862,24 +4194,37 @@ async function updateWinsLosses(winnerId, loserId) {
 
 async function findCharacterRef(characterId) {
     try {
-        // 먼저 현재 사용자의 캐릭터에서 찾기
-        const userCharRef = doc(db, `users/${currentUser.uid}/characters`, characterId);
-        const userCharDoc = await getDocs(query(collection(db, `users/${currentUser.uid}/characters`), where('__name__', '==', characterId)));
+        console.log('findCharacterRef 호출됨, characterId:', characterId);
+        console.log('현재 사용자 ID:', currentUser?.uid);
         
-        if (!userCharDoc.empty) {
-            return userCharRef;
+        // 먼저 현재 사용자의 캐릭터에서 찾기
+        if (currentUser?.uid) {
+            const userCharRef = doc(db, `users/${currentUser.uid}/characters`, characterId);
+            const userCharDoc = await getDoc(userCharRef);
+            
+            if (userCharDoc.exists()) {
+                console.log('현재 사용자의 캐릭터에서 찾음:', userCharRef.path);
+                return userCharRef;
+            }
         }
         
-        // 전체 사용자에서 찾기
+        // 전체 사용자에서 찾기 (소유자 정보와 함께)
         const allUsersQuery = query(collectionGroup(db, 'characters'));
         const allCharsSnapshot = await getDocs(allUsersQuery);
         
         for (const charDoc of allCharsSnapshot.docs) {
             if (charDoc.id === characterId) {
+                console.log('전체 검색에서 찾은 캐릭터:', {
+                    id: charDoc.id,
+                    path: charDoc.ref.path,
+                    userId: charDoc.data().userId,
+                    currentUserId: currentUser?.uid
+                });
                 return charDoc.ref;
             }
         }
         
+        console.log('캐릭터를 찾을 수 없음:', characterId);
         return null;
     } catch (error) {
         console.error('Error finding character reference:', error);
@@ -5079,7 +5424,7 @@ Generate this battle scene with absolute fidelity to character descriptions.
 // --- MIGRATION FUNCTIONS ---
 async function migrateExistingCharacters() {
     try {
-        console.log('Starting character migration for appearance_prompt field...');
+        console.log('Starting character migration for appearance_prompt and enhanced_prompt fields...');
         
         // 모든 캐릭터 조회
         const charactersQuery = query(collectionGroup(db, 'characters'));
@@ -5091,13 +5436,26 @@ async function migrateExistingCharacters() {
         charactersSnapshot.forEach((doc) => {
             const data = doc.data();
             
-            // appearance_prompt 필드가 없고 image_prompt가 있는 경우 마이그레이션
-            if (!data.appearance_prompt && data.image_prompt) {
-                batch.update(doc.ref, {
-                    appearance_prompt: data.image_prompt,
+            // appearance_prompt 또는 enhanced_prompt 필드가 없고 image_prompt가 있는 경우 마이그레이션
+            if ((!data.appearance_prompt || !data.enhanced_prompt) && data.image_prompt) {
+                const updateData = {
                     migrated: true,
                     migratedAt: new Date().toISOString()
-                });
+                };
+                
+                // appearance_prompt가 없으면 추가
+                if (!data.appearance_prompt) {
+                    updateData.appearance_prompt = data.image_prompt;
+                }
+                
+                // enhanced_prompt가 없으면 생성해서 추가
+                if (!data.enhanced_prompt) {
+                    // 컨셉 정보가 있으면 사용, 없으면 빈 문자열
+                    const conceptKeywords = data.concept ? getConceptKeywords(data.concept) : '';
+                    updateData.enhanced_prompt = `${data.image_prompt}, ${conceptKeywords}, fantasy character portrait, ${data.class || 'fantasy character'}, high quality, detailed, digital art, concept art style, professional illustration, centered composition, dramatic lighting, vibrant colors, masterpiece quality, full body or portrait view`;
+                }
+                
+                batch.update(doc.ref, updateData);
                 migratedCount++;
                 console.log(`Migrating character: ${data.name}`);
             }
@@ -5106,7 +5464,7 @@ async function migrateExistingCharacters() {
         if (migratedCount > 0) {
             await batch.commit();
             console.log(`Successfully migrated ${migratedCount} characters`);
-            alert(`${migratedCount}개의 기존 캐릭터에 외형 정보를 추가했습니다.`);
+            alert(`${migratedCount}개의 기존 캐릭터에 강화된 프롬프트 정보를 추가했습니다.`);
         } else {
             console.log('No characters need migration');
         }

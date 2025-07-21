@@ -4,7 +4,7 @@ require('dotenv').config();
 
 // Hugging Face 토큰 설정
 const HF_TOKEN_PRIMARY = process.env.HF_TOKEN;
-const HF_TOKEN_FALLBACK = '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';
+const HF_TOKEN_FALLBACK = process.env.HF_FALLBACK_TOKEN || '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';
 
 const app = express();
 
