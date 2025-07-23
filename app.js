@@ -3,7 +3,7 @@
 // ------------------------------------------------------------------
 import { initializeApp } from "https://www.gstatic.com/firebasejs/9.15.0/firebase-app.js";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.15.0/firebase-auth.js";
-import { getFirestore, doc, setDoc, addDoc, collection, getDocs, getDoc, runTransaction, query, where, limit, orderBy, collectionGroup, deleteDoc, writeBatch, updateDoc } from "https://www.gstatic.com/firebasejs/9.15.0/firebase-firestore.js";
+import { getFirestore, doc, setDoc, addDoc, collection, getDocs, getDoc, runTransaction, query, where, limit, orderBy, collectionGroup, deleteDoc, writeBatch, updateDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/9.15.0/firebase-firestore.js";
 import { GoogleGenerativeAI } from "https://esm.run/@google/generative-ai";
 
 // --- CONFIGURATION ---
@@ -26,10 +26,20 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-// 텍스트 생성용 Gemini 모델들 (폴백 시스템)
-const primaryModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-const fallbackModel1 = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-const fallbackModel2 = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
+// 텍스트 생성용 Gemini 모델들 (폴백 시스템) - 한국어 응답 강제
+const koreanSystemInstruction = "You must respond in Korean only. All narrative text, descriptions, and story content must be written in Korean. Character names, skill names, and proper nouns can remain in their original language, but all other text must be in Korean.";
+const primaryModel = genAI.getGenerativeModel({ 
+    model: 'gemini-2.5-flash',
+    systemInstruction: koreanSystemInstruction
+});
+const fallbackModel1 = genAI.getGenerativeModel({ 
+    model: 'gemini-2.0-flash',
+    systemInstruction: koreanSystemInstruction
+});
+const fallbackModel2 = genAI.getGenerativeModel({ 
+    model: 'gemini-2.5-flash-lite',
+    systemInstruction: koreanSystemInstruction
+});
 // 이미지 생성은 Craiyon API를 사용합니다.
 
 // 모델 폴백 순서 정의
@@ -46,8 +56,17 @@ let playerCharacterForBattle = null;
 let opponentCharacterForBattle = null;
 let selectedCharacterCard = null;
 let selectedSkills = [];
-let allCharactersCache = []; // Cache for opponent finding
+
+// 실시간 리스너 기반 전역 데이터
+let allCharactersPool = []; // 실시간 업데이트되는 모든 캐릭터 풀
+let userCharactersPool = []; // 실시간 업데이트되는 사용자 캐릭터 풀
+let rankingData = []; // 실시간 업데이트되는 랭킹 데이터
 let userLuna = 0; // 사용자의 루나 잔액
+
+// 실시간 리스너 관리
+let allCharactersUnsubscribe = null;
+let userCharactersUnsubscribe = null;
+let isRealTimeInitialized = false;
 
 // --- DOM ELEMENTS ---
 const authSection = document.getElementById('auth-section');
@@ -260,6 +279,122 @@ async function generateWithFallback(prompt, maxRetriesPerModel = 2) {
 // 기존 함수명과의 호환성을 위한 별칭
 const generateWithRetry = generateWithFallback;
 
+// --- REAL-TIME LISTENERS ---
+// 실시간 리스너 초기화
+function initializeRealTimeListeners() {
+    if (isRealTimeInitialized) return;
+    
+    console.log('🔄 실시간 리스너 초기화 중...');
+    
+    // 모든 캐릭터 실시간 리스너
+    const allCharactersQuery = collectionGroup(db, 'characters');
+    allCharactersUnsubscribe = onSnapshot(allCharactersQuery, (snapshot) => {
+        allCharactersPool = [];
+        snapshot.forEach((doc) => {
+            const data = doc.data();
+            const characterRef = doc.ref;
+            const pathParts = characterRef.path.split('/');
+            const userId = pathParts[1]; // users/{userId}/characters/{characterId}
+            
+            allCharactersPool.push({
+                id: doc.id,
+                userId: userId,
+                ...data
+            });
+        });
+        
+        console.log(`✅ 전체 캐릭터 풀 업데이트: ${allCharactersPool.length}개`);
+        
+        // 랭킹 데이터 실시간 업데이트
+        updateRankingData();
+        
+        // 랭킹 모달이 열려있다면 UI 업데이트
+        if (!rankingModal.classList.contains('hidden')) {
+            displayRanking();
+        }
+    }, (error) => {
+        console.error('전체 캐릭터 리스너 오류:', error);
+    });
+    
+    isRealTimeInitialized = true;
+    console.log('✅ 실시간 리스너 초기화 완료');
+}
+
+// 사용자별 캐릭터 실시간 리스너 초기화
+function initializeUserCharactersListener(userId) {
+    if (userCharactersUnsubscribe) {
+        userCharactersUnsubscribe();
+    }
+    
+    const userCharactersQuery = collection(db, 'users', userId, 'characters');
+    userCharactersUnsubscribe = onSnapshot(userCharactersQuery, (snapshot) => {
+        userCharactersPool = [];
+        snapshot.forEach((doc) => {
+            userCharactersPool.push({
+                id: doc.id,
+                userId: userId,
+                ...doc.data()
+            });
+        });
+        
+        console.log(`✅ 사용자 캐릭터 풀 업데이트: ${userCharactersPool.length}개`);
+        
+        // 캐릭터 카드 섹션이 표시되어 있다면 UI 업데이트
+        if (!characterCardsSection.classList.contains('hidden')) {
+            displayUserCharacters(userCharactersPool);
+        }
+    }, (error) => {
+        console.error('사용자 캐릭터 리스너 오류:', error);
+    });
+}
+
+// 랭킹 데이터 업데이트
+function updateRankingData() {
+    const charactersWithStats = allCharactersPool.map(character => {
+        const totalBattles = (character.wins || 0) + (character.losses || 0);
+        const winRate = totalBattles > 0 ? ((character.wins || 0) / totalBattles * 100).toFixed(2) : "0.00";
+        
+        return {
+            ...character,
+            totalBattles,
+            winRate
+        };
+    });
+    
+    // 승률 기준으로 정렬 (승률이 같으면 총 전투 수로 정렬)
+    rankingData = charactersWithStats
+        .filter(char => char.totalBattles > 0) // 전투 기록이 있는 캐릭터만
+        .sort((a, b) => {
+            const winRateA = parseFloat(a.winRate);
+            const winRateB = parseFloat(b.winRate);
+            if (winRateB !== winRateA) {
+                return winRateB - winRateA;
+            }
+            return b.totalBattles - a.totalBattles;
+        })
+        .slice(0, 10); // 상위 10개만
+}
+
+// 실시간 리스너 정리
+function cleanupRealTimeListeners() {
+    if (allCharactersUnsubscribe) {
+        allCharactersUnsubscribe();
+        allCharactersUnsubscribe = null;
+    }
+    
+    if (userCharactersUnsubscribe) {
+        userCharactersUnsubscribe();
+        userCharactersUnsubscribe = null;
+    }
+    
+    isRealTimeInitialized = false;
+    allCharactersPool = [];
+    userCharactersPool = [];
+    rankingData = [];
+    
+    console.log('🧹 실시간 리스너 정리 완료');
+}
+
 // --- UI MANAGEMENT ---
 function showView(view) {
     authSection.classList.add('hidden');
@@ -276,6 +411,10 @@ function showView(view) {
     } else if (view === 'character-cards') {
         appContent.classList.remove('hidden');
         characterCardsSection.classList.remove('hidden');
+        // 캐릭터 카드 뷰가 표시될 때 자동으로 사용자 캐릭터 로드
+        if (currentUser) {
+            loadUserCharacters();
+        }
     } else if (view === 'character-creation') {
         appContent.classList.remove('hidden');
         characterCreationSection.classList.remove('hidden');
@@ -324,12 +463,18 @@ onAuthStateChanged(auth, async (user) => {
         logoutBtn.classList.remove('hidden');
         showRankingBtn.classList.remove('hidden');
         adminBtn.classList.remove('hidden');
+        
+        // 실시간 리스너 초기화
+        initializeRealTimeListeners();
+        initializeUserCharactersListener(user.uid);
+        
         showView('character-cards');
-        loadUserCharacters();
-        fetchAllCharacters(); // Cache all characters for opponent finding
         await loadUserLuna(); // 루나 잔액 로드
         initializeLunaDisplay(); // 루나 디스플레이 초기화
     } else {
+        // 로그아웃 시 실시간 리스너 정리
+        cleanupRealTimeListeners();
+        
         logoutBtn.classList.add('hidden');
         showRankingBtn.classList.add('hidden');
         adminBtn.classList.add('hidden');
@@ -560,9 +705,7 @@ generateCharacterBtn.addEventListener('click', async () => {
         alert(`${parsedData.name} 캐릭터가 생성되었습니다!`);
         document.getElementById('character-creation-form').reset();
         showView('character-cards');
-        loadUserCharacters();
-        // 새 캐릭터 생성 후 캐시 업데이트
-        await fetchAllCharacters();
+        // 실시간 리스너가 자동으로 UI를 업데이트하므로 추가 작업 불필요
 
     } catch (error) {
         console.error("캐릭터 생성 전체 과정 오류:", error);
@@ -672,9 +815,9 @@ async function saveCharacter(characterData) {
         throw new Error("저장할 캐릭터 데이터 또는 현재 유저 정보가 없습니다.");
     }
     try {
-        await addDoc(collection(db, `users/${currentUser.uid}/characters`), characterData);
+        const docRef = await addDoc(collection(db, `users/${currentUser.uid}/characters`), characterData);
         alert(`${characterData.name}이(가) 당신의 동료가 되었습니다!`);
-        loadUserCharacters(); // 목록 새로고침
+        // 실시간 리스너가 자동으로 UI를 업데이트하므로 추가 작업 불필요
     } catch (error) {
         console.error("캐릭터 저장 오류: ", error);
         throw new Error('캐릭터를 데이터베이스에 저장하는 데 실패했습니다.');
@@ -682,82 +825,61 @@ async function saveCharacter(characterData) {
 }
 
 // --- CHARACTER MANAGEMENT ---
-async function loadUserCharacters() {
+// 실시간 데이터를 사용하는 새로운 함수 (기존 호환성 유지)
+function loadUserCharacters(forceRefresh = false) {
     if (!currentUser) return;
-    characterCardsGrid.innerHTML = '<p>캐릭터를 불러오는 중...</p>';
-    try {
-        // 현재 사용자의 캐릭터 로드
-        const userQuery = query(collection(db, `users/${currentUser.uid}/characters`), orderBy('name', 'asc'));
-        const userSnapshot = await getDocs(userQuery);
-        
-        const userCharacters = [];
-        userSnapshot.forEach((doc) => {
-            userCharacters.push({ id: doc.id, userId: currentUser.uid, ...doc.data() });
+    
+    // 실시간 리스너가 이미 데이터를 관리하므로 즉시 표시
+    console.log(`실시간 사용자 캐릭터 풀 사용: ${userCharactersPool.length}개 캐릭터`);
+    displayUserCharacters(userCharactersPool);
+    return Promise.resolve();
+}
+
+// 사용자 캐릭터 표시 함수 분리
+function displayUserCharacters(userCharacters) {
+    characterCardsGrid.innerHTML = '';
+    
+    // 캐릭터 생성 카드 추가
+    const createCard = document.createElement('div');
+    createCard.className = 'create-character-card';
+    
+    // 캐릭터 개수가 4개에 도달했는지 확인
+    const isLimitReached = userCharacters.length >= 4;
+    
+    if (isLimitReached) {
+        createCard.classList.add('disabled');
+        createCard.innerHTML = `
+            <div class="create-card-content">
+                <div class="create-icon disabled">✕</div>
+                <h3>생성 제한 도달</h3>
+                <p>캐릭터 생성 한도에 도달했습니다</p>
+                <p class="create-limit">(4개/4개)</p>
+            </div>
+        `;
+    } else {
+        createCard.innerHTML = `
+            <div class="create-card-content">
+                <div class="create-icon">+</div>
+                <h3>새로운 영웅 생성</h3>
+                <p>새로운 모험을 시작하세요</p>
+                <p class="create-limit">(${userCharacters.length}/4개)</p>
+            </div>
+        `;
+        createCard.addEventListener('click', () => {
+            showView('character-creation');
         });
-        
-        // 전체 캐릭터에서 현재 사용자가 만든 캐릭터 찾기 (과거 테스트 캐릭터 포함)
-        const allCharsQuery = query(collectionGroup(db, 'characters'));
-        const allCharsSnapshot = await getDocs(allCharsQuery);
-        
-        allCharsSnapshot.forEach((doc) => {
-            const charData = doc.data();
-            // 현재 사용자가 만든 캐릭터이지만 사용자 컬렉션에 없는 경우 추가
-            if (charData.createdBy === currentUser.uid && !userCharacters.find(c => c.id === doc.id)) {
-                // userId 필드 추가
-                userCharacters.push({ id: doc.id, userId: currentUser.uid, ...charData });
-            }
+    }
+    
+    characterCardsGrid.appendChild(createCard);
+    
+    // 기존 캐릭터 카드들 추가
+    if (userCharacters.length === 0) {
+        // 빈 메시지는 생성 카드만 표시
+    } else {
+        userCharacters.forEach((character) => {
+            const card = createMainCharacterCard(character);
+            characterCardsGrid.appendChild(card);
         });
-        
-        // 이름순으로 정렬
-        userCharacters.sort((a, b) => a.name.localeCompare(b.name));
-        
-        characterCardsGrid.innerHTML = '';
-        
-        // 캐릭터 생성 카드 추가
-        const createCard = document.createElement('div');
-        createCard.className = 'create-character-card';
-        
-        // 캐릭터 개수가 4개에 도달했는지 확인
-        const isLimitReached = userCharacters.length >= 4;
-        
-        if (isLimitReached) {
-            createCard.classList.add('disabled');
-            createCard.innerHTML = `
-                <div class="create-card-content">
-                    <div class="create-icon disabled">✕</div>
-                    <h3>생성 제한 도달</h3>
-                    <p>캐릭터 생성 한도에 도달했습니다</p>
-                    <p class="create-limit">(4개/4개)</p>
-                </div>
-            `;
-        } else {
-            createCard.innerHTML = `
-                <div class="create-card-content">
-                    <div class="create-icon">+</div>
-                    <h3>새로운 영웅 생성</h3>
-                    <p>새로운 모험을 시작하세요</p>
-                    <p class="create-limit">(${userCharacters.length}/4개)</p>
-                </div>
-            `;
-            createCard.addEventListener('click', () => {
-                showView('character-creation');
-            });
-        }
-        
-        characterCardsGrid.appendChild(createCard);
-        
-        // 기존 캐릭터 카드들 추가
-        if (userCharacters.length === 0) {
-            // 빈 메시지는 생성 카드만 표시
-        } else {
-            userCharacters.forEach((character) => {
-                const card = createMainCharacterCard(character);
-                characterCardsGrid.appendChild(card);
-            });
-        }
-    } catch (error) {
-        console.error("캐릭터 로딩 오류: ", error);
-        characterCardsGrid.innerHTML = '<p>캐릭터를 불러오는데 실패했습니다.</p>';
     }
 }
 
@@ -978,34 +1100,18 @@ window.regenerateCharacterImage = async function(characterId) {
         
         console.log('Firebase 업데이트 완료');
         
-        // 캐시 업데이트
-        console.log('=== 캐시 업데이트 시작 ===');
-        console.log('allCharactersCache 존재 여부:', !!allCharactersCache);
-        console.log('allCharactersCache 길이:', allCharactersCache ? allCharactersCache.length : 'undefined');
+        // 실시간 데이터는 자동으로 업데이트되므로 별도 캐시 업데이트 불필요
+        console.log('=== 실시간 데이터 확인 ===');
+        console.log('실시간 캐릭터 풀 길이:', allCharactersPool.length);
         console.log('대상 캐릭터 ID:', characterId);
         console.log('새 이미지 URL:', result.imageUrl);
-        
-        if (allCharactersCache && allCharactersCache.length > 0) {
-            const cachedCharacterIndex = allCharactersCache.findIndex(c => c.id === characterId);
-            console.log('캐시에서 찾은 캐릭터 인덱스:', cachedCharacterIndex);
-            if (cachedCharacterIndex !== -1) {
-                console.log('업데이트 전 이미지 URL:', allCharactersCache[cachedCharacterIndex].imageUrl);
-                allCharactersCache[cachedCharacterIndex].imageUrl = result.imageUrl;
-                console.log('캐시된 캐릭터 데이터 업데이트 완료:', allCharactersCache[cachedCharacterIndex].name);
-                console.log('업데이트 후 이미지 URL:', allCharactersCache[cachedCharacterIndex].imageUrl);
-            } else {
-                console.log('캐시에서 해당 캐릭터를 찾을 수 없음');
-            }
-        } else {
-            console.log('캐시가 비어있거나 존재하지 않음');
-        }
         
         // UI 즉시 업데이트 (캐시 버스팅 적용) - 모든 이미지 요소 업데이트
         const timestamp = new Date().getTime();
         const cacheBustingUrl = result.imageUrl.startsWith('data:') ? result.imageUrl : result.imageUrl + '?t=' + timestamp;
         
         // 캐릭터 데이터 가져오기
-        const targetCharacterData = allCharactersCache.find(c => c.id === characterId);
+        const targetCharacterData = allCharactersPool.find(c => c.id === characterId);
         if (!targetCharacterData) {
             console.error('캐릭터 데이터를 찾을 수 없습니다:', characterId);
             return;
@@ -1119,26 +1225,10 @@ async function showCharacterDetail(character) {
     // 페이지 상단으로 스크롤
     window.scrollTo(0, 0);
     
-    // Firebase에서 최신 캐릭터 데이터 가져오기 (올바른 경로 사용)
-    let latestCharacter = character;
-    try {
-        const characterRef = await findCharacterRef(character.id);
-        if (characterRef) {
-            const characterSnap = await getDoc(characterRef);
-            if (characterSnap.exists()) {
-                latestCharacter = { id: characterSnap.id, ...characterSnap.data() };
-                console.log('Firebase에서 최신 캐릭터 데이터 가져옴:', latestCharacter.name);
-                console.log('캐릭터 소유자 ID (Firebase):', latestCharacter.userId);
-            } else {
-                console.log('Firebase에서 캐릭터를 찾을 수 없음, 캐시된 데이터 사용');
-            }
-        } else {
-            console.log('캐릭터 참조를 찾을 수 없음, 캐시된 데이터 사용');
-        }
-    } catch (error) {
-        console.error('Firebase에서 캐릭터 데이터 가져오기 실패:', error);
-        console.log('캐시된 데이터 사용');
-    }
+    // 실시간 데이터에서 최신 캐릭터 데이터 가져오기
+    const latestCharacter = allCharactersPool.find(c => c.id === character.id) || character;
+    console.log('실시간 풀에서 최신 캐릭터 데이터 가져옴:', latestCharacter.name);
+    console.log('캐릭터 소유자 ID:', latestCharacter.userId);
     
     detailCharacterName.textContent = latestCharacter.name;
     
@@ -1343,15 +1433,14 @@ async function showCharacterDetail(character) {
 // 상세 화면에서 전투 시작 - 매칭 화면으로 이동
 async function startBattleFromDetail(characterId) {
     console.log('startBattleFromDetail 호출됨, characterId:', characterId);
-    console.log('현재 allCharactersCache 길이:', allCharactersCache.length);
+    console.log('현재 실시간 캐릭터 풀 길이:', allCharactersPool.length);
     
-    let character = allCharactersCache.find(c => c.id === characterId);
+    let character = allCharactersPool.find(c => c.id === characterId) || null;
     
-    // 캐시에서 캐릭터를 찾을 수 없는 경우 캐시를 새로고침
-    if (!character || allCharactersCache.length === 0) {
-        console.log('캐시에서 캐릭터를 찾을 수 없음. 캐시 새로고침 중...');
-        await fetchAllCharacters();
-        character = allCharactersCache.find(c => c.id === characterId);
+    // 실시간 풀에서 캐릭터를 찾을 수 없는 경우
+    if (!character || allCharactersPool.length === 0) {
+        console.log('실시간 풀에서 캐릭터를 찾을 수 없음');
+        character = allCharactersPool.find(c => c.id === characterId);
     }
     
     if (character) {
@@ -1384,8 +1473,8 @@ async function startBattleFromDetail(characterId) {
         }
         
         // 상대방 찾기 - 자신의 캐릭터와 같은 사용자의 캐릭터 제외
-        if (allCharactersCache.length > 1) {
-            const availableOpponents = allCharactersCache.filter(c => 
+        if (allCharactersPool.length > 1) {
+            const availableOpponents = allCharactersPool.filter(c => 
                 c.id !== character.id && c.userId !== currentUser.uid
             );
             
@@ -1440,7 +1529,8 @@ async function startBattleFromDetail(characterId) {
 
 // 매칭 화면 표시
 function showMatchingScreen() {
-    selectedSkills = []; // 스킬 선택 초기화
+    // 스킬 선택 초기화 (최근 사용 스킬 자동 선택을 위해 generateSkillSelectionHTML에서 처리)
+    selectedSkills = [];
     // 페이지 상단으로 스크롤
     window.scrollTo(0, 0);
     
@@ -1535,13 +1625,32 @@ function handleMatchingSkillSelection(event) {
 function generateSkillSelectionHTML() {
     let skillsHTML = '';
     
+    // 최근 사용 스킬 자동 선택을 위한 준비
+    const lastUsedSkills = playerCharacterForBattle.lastUsedSkills || [];
+    const shouldAutoSelect = lastUsedSkills.length > 0;
+    
+    console.log('최근 사용 스킬:', lastUsedSkills);
+    console.log('자동 선택 여부:', shouldAutoSelect);
+    
     // 공격 스킬
     if (playerCharacterForBattle.attack_skills && playerCharacterForBattle.attack_skills.length > 0) {
         playerCharacterForBattle.attack_skills.forEach((skill, index) => {
+            // 최근 사용 스킬과 일치하는지 확인
+            const isLastUsed = shouldAutoSelect && lastUsedSkills.some(lastSkill => 
+                (lastSkill.name || lastSkill.skill_name) === (skill.name || skill.skill_name)
+            );
+            const checkedAttr = isLastUsed ? 'checked' : '';
+            const selectedClass = isLastUsed ? 'selected' : '';
+            
+            // 자동 선택된 스킬을 selectedSkills 배열에 추가
+            if (isLastUsed && !selectedSkills.some(s => (s.name || s.skill_name) === (skill.name || skill.skill_name))) {
+                selectedSkills.push(skill);
+            }
+            
             skillsHTML += `
-                <div class="skill-selection-item">
+                <div class="skill-selection-item ${selectedClass}">
                     <div class="skill-checkbox-container">
-                        <input type="checkbox" id="matching-attack-skill-${index}" class="skill-checkbox" data-skill='${JSON.stringify(skill).replace(/'/g, "&apos;")}' data-skill-type="attack">
+                        <input type="checkbox" id="matching-attack-skill-${index}" class="skill-checkbox" data-skill='${JSON.stringify(skill).replace(/'/g, "&apos;")}' data-skill-type="attack" ${checkedAttr}>
                         <label for="matching-attack-skill-${index}" class="skill-checkbox-label">
                             <span class="checkbox-custom"></span>
                         </label>
@@ -1562,10 +1671,22 @@ function generateSkillSelectionHTML() {
     // 방어 스킬
     if (playerCharacterForBattle.defense_skills && playerCharacterForBattle.defense_skills.length > 0) {
         playerCharacterForBattle.defense_skills.forEach((skill, index) => {
+            // 최근 사용 스킬과 일치하는지 확인
+            const isLastUsed = shouldAutoSelect && lastUsedSkills.some(lastSkill => 
+                (lastSkill.name || lastSkill.skill_name) === (skill.name || skill.skill_name)
+            );
+            const checkedAttr = isLastUsed ? 'checked' : '';
+            const selectedClass = isLastUsed ? 'selected' : '';
+            
+            // 자동 선택된 스킬을 selectedSkills 배열에 추가
+            if (isLastUsed && !selectedSkills.some(s => (s.name || s.skill_name) === (skill.name || skill.skill_name))) {
+                selectedSkills.push(skill);
+            }
+            
             skillsHTML += `
-                <div class="skill-selection-item">
+                <div class="skill-selection-item ${selectedClass}">
                     <div class="skill-checkbox-container">
-                        <input type="checkbox" id="matching-defense-skill-${index}" class="skill-checkbox" data-skill='${JSON.stringify(skill).replace(/'/g, "&apos;")}' data-skill-type="defense">
+                        <input type="checkbox" id="matching-defense-skill-${index}" class="skill-checkbox" data-skill='${JSON.stringify(skill).replace(/'/g, "&apos;")}' data-skill-type="defense" ${checkedAttr}>
                         <label for="matching-defense-skill-${index}" class="skill-checkbox-label">
                             <span class="checkbox-custom"></span>
                         </label>
@@ -1734,7 +1855,7 @@ function deleteCharacterFromDetail(characterId, characterName) {
             .then(() => {
                 alert(`'${characterName}' 캐릭터가 성공적으로 삭제되었습니다.`);
                 showView('character-cards');
-                loadUserCharacters();
+                // 실시간 리스너가 자동으로 UI를 업데이트하므로 별도 처리 불필요
             })
             .catch((error) => {
                 console.error("Error deleting character: ", error);
@@ -2065,27 +2186,10 @@ window.switchOpponentTab = switchOpponentTab;
 window.closeOpponentModal = closeOpponentModal;
 
 // 전체 캐릭터 순위 계산을 위한 함수
-async function getAllCharactersForRanking() {
-    try {
-        const charactersSnapshot = await getDocs(collectionGroup(db, 'characters'));
-        const characters = [];
-        charactersSnapshot.forEach((doc) => {
-            // userId 추출
-            let userId = 'unknown';
-            try {
-                if (doc.ref && doc.ref.parent && doc.ref.parent.parent) {
-                    userId = doc.ref.parent.parent.id;
-                }
-            } catch (refError) {
-                console.warn('Could not extract user ID for:', doc.id);
-            }
-            characters.push({ id: doc.id, userId: userId, ...doc.data() });
-        });
-        return characters;
-    } catch (error) {
-        console.error('전체 캐릭터 가져오기 오류:', error);
-        return [];
-    }
+function getAllCharactersForRanking() {
+    // 실시간 데이터 사용 (Firebase 읽기 없음)
+    console.log(`실시간 캐릭터 풀에서 랭킹용 데이터 반환: ${allCharactersPool.length}개 캐릭터`);
+    return Promise.resolve(allCharactersPool);
 }
 
 // 최근 전투 기록 가져오기 (임시 데이터)
@@ -2206,7 +2310,7 @@ async function deleteCharacter(characterId, characterName) {
         try {
             await deleteDoc(doc(db, `users/${currentUser.uid}/characters`, characterId));
             alert(`'${characterName}' 캐릭터가 성공적으로 삭제되었습니다.`);
-            loadUserCharacters();
+            // 실시간 리스너가 자동으로 UI를 업데이트하므로 추가 작업 불필요
         } catch (error) {
             console.error("Error deleting character: ", error);
             alert('캐릭터 삭제 중 오류가 발생했습니다.');
@@ -2243,28 +2347,13 @@ function selectPlayerForBattle(character, cardElement) {
 }
 
 // --- BATTLE SYSTEM (RESTRUCTURED) ---
-async function fetchAllCharacters() {
-    console.log("Caching all characters for opponent finding...");
-    try {
-        const q = query(collectionGroup(db, 'characters'));
-        const querySnapshot = await getDocs(q);
-        allCharactersCache = querySnapshot.docs.map(doc => {
-            // userId 추출
-            let userId = 'unknown';
-            try {
-                if (doc.ref && doc.ref.parent && doc.ref.parent.parent) {
-                    userId = doc.ref.parent.parent.id;
-                }
-            } catch (refError) {
-                console.warn('Could not extract user ID for:', doc.id);
-            }
-            return { id: doc.id, userId: userId, ...doc.data() };
-        });
-        console.log(`Cached ${allCharactersCache.length} characters.`);
-    } catch (error) {
-        console.error("Error caching all characters: ", error);
-    }
+// 실시간 데이터를 사용하는 새로운 함수 (기존 호환성 유지)
+function fetchAllCharacters(forceRefresh = false) {
+    // 실시간 리스너가 이미 데이터를 관리하므로 즉시 반환
+    console.log(`실시간 캐릭터 풀 사용: ${allCharactersPool.length}개 캐릭터`);
+    return Promise.resolve();
 }
+
 
 // 뒤로가기 버튼 이벤트 리스너들
 backToCardsBtn.addEventListener('click', () => {
@@ -2283,42 +2372,41 @@ if (backToListBtn) {
 }
 
 if (findOpponentBtn) {
-    findOpponentBtn.addEventListener('click', async () => {
-    findOpponentBtn.disabled = true;
-    opponentBattleCard.innerHTML = '<p>상대를 찾는 중...</p>';
-    const battleGuideText = document.getElementById('battle-guide-text');
+    findOpponentBtn.addEventListener('click', () => {
+        findOpponentBtn.disabled = true;
+        opponentBattleCard.innerHTML = '<p>상대를 찾는 중...</p>';
+        const battleGuideText = document.getElementById('battle-guide-text');
 
-    try {
-        // Use cache. If it's empty for some reason, try fetching again.
-        if (allCharactersCache.length < 2) {
-            await fetchAllCharacters();
-        }
+        try {
+            // 실시간 데이터에서 상대 찾기 (Firebase 읽기 없음)
+            const opponents = allCharactersPool.filter(char => char.userId !== currentUser.uid);
 
-        const opponents = allCharactersCache.filter(char => char.id.split('_')[0] !== currentUser.uid);
+            if (opponents.length === 0) {
+                opponentBattleCard.innerHTML = '<p>싸울 상대가 아직 없습니다. 다른 유저가 캐릭터를 만들 때까지 기다려주세요.</p>';
+                if (battleGuideText) {
+                    battleGuideText.textContent = '현재 대결 가능한 상대가 없습니다.';
+                }
+                findOpponentBtn.disabled = false;
+                return;
+            }
 
-        if (opponents.length === 0) {
-            opponentBattleCard.innerHTML = '<p>싸울 상대가 아직 없습니다. 다른 유저가 캐릭터를 만들 때까지 기다려주세요.</p>';
+            // 랜덤 상대 선택
+            const randomIndex = Math.floor(Math.random() * opponents.length);
+            opponentCharacterForBattle = opponents[randomIndex];
+
+            console.log(`상대 매칭 완료: ${opponentCharacterForBattle.name} (총 ${opponents.length}명 중 선택)`);
+
+            // 매칭된 상대방 화면으로 전환
+            showMatchedOpponentScreen();
+
+        } catch (error) {
+            console.error("Error finding opponent: ", error);
+            opponentBattleCard.innerHTML = '<p>상대를 찾는 중 오류가 발생했습니다.</p>';
             if (battleGuideText) {
-            battleGuideText.textContent = '현재 대결 가능한 상대가 없습니다.';
-        }
+                battleGuideText.textContent = '오류가 발생했습니다. 다시 시도해주세요.';
+            }
             findOpponentBtn.disabled = false;
-            return;
         }
-
-        const randomIndex = Math.floor(Math.random() * opponents.length);
-        opponentCharacterForBattle = opponents[randomIndex];
-
-        // 매칭된 상대방 화면으로 전환
-        showMatchedOpponentScreen();
-
-    } catch (error) {
-        console.error("Error finding opponent: ", error);
-        opponentBattleCard.innerHTML = '<p>상대를 찾는 중 오류가 발생했습니다.</p>';
-        if (battleGuideText) {
-            battleGuideText.textContent = '오류가 발생했습니다. 다시 시도해주세요.';
-        }
-        findOpponentBtn.disabled = false;
-    }
     });
 }
 
@@ -3028,13 +3116,13 @@ const MAX_RECENT_OPPONENTS = 5;
 async function findRandomOpponent(playerCharacterId) {
     console.log('최근 상대 회피 기반 상대 찾기 시작...');
     
-    // 캐시가 비어있다면 새로고침
-    if (allCharactersCache.length === 0) {
-        await fetchAllCharacters();
+    // 실시간 풀이 비어있는지 확인
+    if (allCharactersPool.length === 0) {
+        console.log('실시간 캐릭터 풀이 비어있음');
     }
     
     // 자신의 캐릭터와 같은 사용자의 캐릭터 제외
-    let availableOpponents = allCharactersCache.filter(c => 
+    let availableOpponents = allCharactersPool.filter(c => 
         c.id !== playerCharacterId && c.userId !== currentUser.uid
     );
     
@@ -3476,7 +3564,7 @@ window.selectCharacterForBattle = function(characterId, cardElement) {
     cardElement.classList.add('selected');
     
     // 캐릭터 데이터 찾기 (캐시에서 먼저, 없으면 DOM에서)
-     let character = allCharactersCache.find(c => c.id === characterId);
+     let character = allCharactersPool.find(c => c.id === characterId);
      if (!character) {
          // DOM에서 캐릭터 정보 추출
          const characterCard = cardElement;
@@ -3609,22 +3697,8 @@ async function startTurnBasedBattleNew() {
     
     console.log('게이지바 표시 완료');
     
-    // 상대방 최신 데이터 가져오기
-    try {
-        console.log('상대방 최신 데이터 가져오는 중...', opponentCharacterForBattle.id);
-        // 캐시 새로고침
-        await fetchAllCharacters();
-        // 업데이트된 캐시에서 상대방 찾기
-        const latestOpponentData = allCharactersCache.find(c => c.id === opponentCharacterForBattle.id);
-        if (latestOpponentData) {
-            opponentCharacterForBattle = latestOpponentData;
-            console.log('상대방 최신 데이터 업데이트 완료:', opponentCharacterForBattle.name);
-        } else {
-            console.log('상대방 최신 데이터를 가져올 수 없어 캐시된 데이터 사용');
-        }
-    } catch (error) {
-        console.error('상대방 최신 데이터 가져오기 실패, 캐시된 데이터 사용:', error);
-    }
+    // 상대방 최신 데이터 가져오기 (캐시된 데이터 사용)
+    console.log('상대방 캐시된 데이터 사용:', opponentCharacterForBattle.name);
     
     // 상대방 스킬 랜덤 선택 (최신 데이터 기반)
     const opponentSkills = getRandomSkills(opponentCharacterForBattle);
@@ -4184,7 +4258,8 @@ async function updateWinsLosses(winnerId, loserId) {
         
         // 즉시 UI 업데이트
         console.log('UI 업데이트 시작');
-        await loadUserCharacters();
+        // 캐시 강제 갱신으로 최신 데이터 반영
+        await loadUserCharacters(true);
         console.log('UI 업데이트 완료');
         
     } catch (e) {
@@ -4197,7 +4272,17 @@ async function findCharacterRef(characterId) {
         console.log('findCharacterRef 호출됨, characterId:', characterId);
         console.log('현재 사용자 ID:', currentUser?.uid);
         
-        // 먼저 현재 사용자의 캐릭터에서 찾기
+        // 실시간 리스너의 캐시된 데이터에서 먼저 찾기 (Firebase 읽기 절약)
+        if (allCharactersPool && allCharactersPool.length > 0) {
+            const cachedCharacter = allCharactersPool.find(char => char.id === characterId);
+            if (cachedCharacter && cachedCharacter.userId) {
+                const charRef = doc(db, `users/${cachedCharacter.userId}/characters`, characterId);
+                console.log('캐시된 데이터에서 찾음:', charRef.path);
+                return charRef;
+            }
+        }
+        
+        // 캐시에 없으면 현재 사용자의 캐릭터에서 찾기
         if (currentUser?.uid) {
             const userCharRef = doc(db, `users/${currentUser.uid}/characters`, characterId);
             const userCharDoc = await getDoc(userCharRef);
@@ -4205,22 +4290,6 @@ async function findCharacterRef(characterId) {
             if (userCharDoc.exists()) {
                 console.log('현재 사용자의 캐릭터에서 찾음:', userCharRef.path);
                 return userCharRef;
-            }
-        }
-        
-        // 전체 사용자에서 찾기 (소유자 정보와 함께)
-        const allUsersQuery = query(collectionGroup(db, 'characters'));
-        const allCharsSnapshot = await getDocs(allUsersQuery);
-        
-        for (const charDoc of allCharsSnapshot.docs) {
-            if (charDoc.id === characterId) {
-                console.log('전체 검색에서 찾은 캐릭터:', {
-                    id: charDoc.id,
-                    path: charDoc.ref.path,
-                    userId: charDoc.data().userId,
-                    currentUserId: currentUser?.uid
-                });
-                return charDoc.ref;
             }
         }
         
@@ -4263,16 +4332,47 @@ function sleep(ms) {
 function getRandomSkills(opponent) {
     const selectedSkills = [];
     
-    // 공격 스킬 중에서 하나 랜덤 선택
-    if (opponent.attack_skills && opponent.attack_skills.length > 0) {
-        const randomAttackIndex = Math.floor(Math.random() * opponent.attack_skills.length);
-        selectedSkills.push(opponent.attack_skills[randomAttackIndex]);
-    }
+    // 최근 사용 스킬이 있는지 확인
+    const lastUsedSkills = opponent.lastUsedSkills || [];
+    console.log('상대방 최근 사용 스킬:', lastUsedSkills);
     
-    // 방어 스킬 중에서 하나 랜덤 선택
-    if (opponent.defense_skills && opponent.defense_skills.length > 0) {
-        const randomDefenseIndex = Math.floor(Math.random() * opponent.defense_skills.length);
-        selectedSkills.push(opponent.defense_skills[randomDefenseIndex]);
+    if (lastUsedSkills.length >= 2) {
+        // 최근 사용 스킬이 2개 이상 있으면 그대로 사용
+        console.log('상대방 최근 사용 스킬 2개를 사용합니다.');
+        selectedSkills.push(...lastUsedSkills.slice(0, 2));
+    } else if (lastUsedSkills.length === 1) {
+        // 최근 사용 스킬이 1개만 있으면 그것을 포함하고 나머지는 랜덤
+        console.log('상대방 최근 사용 스킬 1개와 랜덤 스킬 1개를 사용합니다.');
+        selectedSkills.push(lastUsedSkills[0]);
+        
+        // 나머지 1개는 랜덤으로 선택 (이미 선택된 스킬 제외)
+        const allSkills = [];
+        if (opponent.attack_skills) allSkills.push(...opponent.attack_skills);
+        if (opponent.defense_skills) allSkills.push(...opponent.defense_skills);
+        
+        const availableSkills = allSkills.filter(skill => 
+            (skill.name || skill.skill_name) !== (lastUsedSkills[0].name || lastUsedSkills[0].skill_name)
+        );
+        
+        if (availableSkills.length > 0) {
+            const randomIndex = Math.floor(Math.random() * availableSkills.length);
+            selectedSkills.push(availableSkills[randomIndex]);
+        }
+    } else {
+        // 최근 사용 스킬이 없으면 기존 랜덤 로직 사용
+        console.log('상대방 최근 사용 스킬이 없어 랜덤 선택합니다.');
+        
+        // 공격 스킬 중에서 하나 랜덤 선택
+        if (opponent.attack_skills && opponent.attack_skills.length > 0) {
+            const randomAttackIndex = Math.floor(Math.random() * opponent.attack_skills.length);
+            selectedSkills.push(opponent.attack_skills[randomAttackIndex]);
+        }
+        
+        // 방어 스킬 중에서 하나 랜덤 선택
+        if (opponent.defense_skills && opponent.defense_skills.length > 0) {
+            const randomDefenseIndex = Math.floor(Math.random() * opponent.defense_skills.length);
+            selectedSkills.push(opponent.defense_skills[randomDefenseIndex]);
+        }
     }
     
     // 만약 공격 또는 방어 스킬이 없다면 나머지 스킬로 채우기
@@ -4299,6 +4399,70 @@ function getRandomSkills(opponent) {
     }
     
     return selectedSkills;
+}
+
+// 캐릭터의 최근 사용 스킬을 저장하는 함수
+async function saveLastUsedSkills(characterId, skills) {
+    try {
+        console.log('saveLastUsedSkills 호출됨:', characterId, skills);
+        
+        if (!characterId || !skills || skills.length === 0) {
+            console.log('유효하지 않은 데이터로 스킬 저장 건너뜀');
+            return;
+        }
+        
+        // 스킬 데이터 정규화 및 undefined 값 필터링
+        const normalizedSkills = skills
+            .filter(skill => skill && (skill.name || skill.skill_name)) // null/undefined 스킬 및 이름이 없는 스킬 제거
+            .map(skill => {
+                const normalized = {
+                    name: skill.name || skill.skill_name,
+                    type: skill.type,
+                    description: skill.description
+                };
+                
+                // undefined 값이 있는 필드 제거
+                Object.keys(normalized).forEach(key => {
+                    if (normalized[key] === undefined) {
+                        delete normalized[key];
+                    }
+                });
+                
+                return normalized;
+            })
+            .filter(skill => skill.name); // 이름이 없는 스킬 최종 제거
+        
+        // Firebase에 최근 사용 스킬 저장 (올바른 경로 사용)
+        const characterRef = await findCharacterRef(characterId);
+        
+        if (!characterRef) {
+            console.log('캐릭터 참조를 찾을 수 없어 스킬 저장을 건너뜀:', characterId);
+            return;
+        }
+        
+        try {
+            // 문서가 존재하는지 확인
+            const docSnap = await getDoc(characterRef);
+            if (docSnap.exists()) {
+                await updateDoc(characterRef, {
+                    lastUsedSkills: normalizedSkills,
+                    lastUsedSkillsTimestamp: new Date().toISOString()
+                });
+                console.log('최근 사용 스킬 저장 완료:', characterId, normalizedSkills);
+            } else {
+                console.log('캐릭터 문서가 존재하지 않아 스킬 저장을 건너뜀:', characterId);
+            }
+        } catch (updateError) {
+            console.error('문서 업데이트 중 오류:', updateError);
+            // 문서가 존재하지 않는 경우 새로 생성
+            if (updateError.code === 'not-found') {
+                console.log('문서가 존재하지 않아 스킬 저장을 건너뜀:', characterId);
+            }
+        }
+        
+    } catch (error) {
+        console.error('스킬 저장 중 오류:', error);
+    }
 }
 
 async function updateCharacterStats(winner, loser) {
@@ -4333,17 +4497,23 @@ async function updateCharacterStats(winner, loser) {
         await updateWinsLosses(winnerId, loserId);
         console.log('updateWinsLosses 호출 완료');
         
+        // 플레이어와 상대방 모두의 최근 사용 스킬 저장
+        if (window.lastBattleData?.playerSkills && window.lastBattleData.player) {
+            // 플레이어의 스킬 저장
+            const playerId = window.lastBattleData.player.id || window.lastBattleData.player.character_id || window.lastBattleData.player.name;
+            await saveLastUsedSkills(playerId, window.lastBattleData.playerSkills);
+        }
+        
+        if (window.lastBattleData?.opponentSkills && window.lastBattleData.opponent) {
+            // 상대방의 스킬 저장
+            const opponentId = window.lastBattleData.opponent.id || window.lastBattleData.opponent.character_id || window.lastBattleData.opponent.name;
+            await saveLastUsedSkills(opponentId, window.lastBattleData.opponentSkills);
+        }
+        
         // 루나 지급은 updateWinsLosses 함수에서 처리됨
         
-        // 랭킹이 열려있으면 새로고침
-        if (!rankingModal.classList.contains('hidden')) {
-            loadRanking();
-        }
-        
-        // 캐릭터 목록도 새로고침
-        if (typeof loadUserCharacters === 'function') {
-            await loadUserCharacters();
-        }
+        // 실시간 리스너가 자동으로 UI를 업데이트하므로 수동 새로고침 불필요
+        console.log('실시간 리스너가 자동으로 랭킹과 캐릭터 목록을 업데이트합니다.');
         
         console.log('updateCharacterStats 완료');
         
@@ -4425,35 +4595,36 @@ async function generateAndShowNovelLog() {
     const opponentSkillNames = opponentSkills.map(skill => skill.name || skill.skill_name).join(', ');
 
     const prompt = `
-        You are a talented novelist. Write a short, dramatic story (in Korean) about a battle between two characters.
-        The story should be about 5-7 paragraphs long.
-        Include their inner thoughts, dialogue, the environment, and a climactic finish based on the provided battle log.
-        The story must be conclusive and reflect the final winner.
+        당신은 재능 있는 소설가입니다. 두 캐릭터 간의 전투에 대한 짧고 극적인 이야기를 한국어로 작성해주세요.
+        이야기는 5-7개 문단 정도의 길이여야 합니다.
+        캐릭터들의 내면의 생각, 대화, 환경, 그리고 제공된 전투 로그를 바탕으로 한 클라이맥스 결말을 포함해주세요.
+        이야기는 결정적이어야 하며 최종 승자를 반영해야 합니다.
         
-        **IMPORTANT: You MUST include the actual skill names used in the battle within the story narrative.**
-        **Use the character backgrounds to create meaningful connections, rivalries, or philosophical conflicts that drive the battle narrative.**
+        **중요: 전투에서 사용된 실제 스킬 이름들을 스토리 내러티브에 반드시 포함해야 합니다.**
+        **캐릭터 배경을 사용하여 의미 있는 연결, 라이벌 관계, 또는 전투 내러티브를 이끄는 철학적 갈등을 만들어주세요.**
+        **모든 서술, 묘사, 대화는 반드시 한국어로 작성해주세요. 스킬 이름과 캐릭터 이름만 원래 언어를 유지할 수 있습니다.**
 
-        - Character 1 (Player): ${player.name} (${player.class})
-          - Used Skills: ${playerSkillNames}
-          - Personality: ${player.personality}
-          - Background Story: ${player.story || '알려지지 않은 과거'}
-          - Origin Story: ${player.origin_story || '신비로운 기원'}
-        - Character 2 (Opponent): ${opponent.name} (${opponent.class})
-          - Used Skills: ${opponentSkillNames}
-          - Personality: ${opponent.personality}
-          - Background Story: ${opponent.story || '알려지지 않은 과거'}
-          - Origin Story: ${opponent.origin_story || '신비로운 기원'}
-        - Battle Log (Turn by Turn):\n${battleTurns.join('\n')}
-        - Final Winner: ${winner.name}
+        - 캐릭터 1 (플레이어): ${player.name} (${player.class})
+          - 사용한 스킬: ${playerSkillNames}
+          - 성격: ${player.personality}
+          - 배경 스토리: ${player.story || '알려지지 않은 과거'}
+          - 기원 스토리: ${player.origin_story || '신비로운 기원'}
+        - 캐릭터 2 (상대방): ${opponent.name} (${opponent.class})
+          - 사용한 스킬: ${opponentSkillNames}
+          - 성격: ${opponent.personality}
+          - 배경 스토리: ${opponent.story || '알려지지 않은 과거'}
+          - 기원 스토리: ${opponent.origin_story || '신비로운 기원'}
+        - 전투 로그 (턴별):\n${battleTurns.join('\n')}
+        - 최종 승자: ${winner.name}
 
-        Please write the story in a compelling, narrative style that:
-        1. Reflects how each character's past experiences influence their combat style and decisions
-        2. Shows how their backgrounds create tension or connection between them
-        3. Includes dialogue that reveals their philosophies and motivations
-        4. Describes their reactions to victory/defeat based on their personal history
-        5. Makes sure to mention the specific skill names (${playerSkillNames}, ${opponentSkillNames}) as they are used during the battle
+        다음과 같은 매력적이고 서사적인 스타일로 이야기를 작성해주세요:
+        1. 각 캐릭터의 과거 경험이 전투 스타일과 결정에 어떻게 영향을 미치는지 반영
+        2. 그들의 배경이 서로 간의 긴장감이나 연결을 어떻게 만드는지 보여주기
+        3. 그들의 철학과 동기를 드러내는 대화 포함
+        4. 개인적 역사를 바탕으로 한 승리/패배에 대한 반응 묘사
+        5. 전투 중 사용되는 특정 스킬 이름들(${playerSkillNames}, ${opponentSkillNames})을 반드시 언급
         
-        Do not just list the events - weave their stories into a meaningful narrative.
+        단순히 사건을 나열하지 말고, 그들의 이야기를 의미 있는 내러티브로 엮어주세요.
     `;
 
     try {
@@ -4818,76 +4989,13 @@ novelLogModal.querySelector('.close-btn').addEventListener('click', () => {
 generateBattleImageBtn.addEventListener('click', generateBattleImage);
 
 // --- RANKING SYSTEM ---
-async function loadRanking() {
+function loadRanking() {
     rankingList.innerHTML = '<p>랭킹을 불러오는 중...</p>';
     
     try {
-        // 모든 캐릭터 데이터 가져오기
-        const q = query(collectionGroup(db, 'characters'));
-        const querySnapshot = await getDocs(q);
-        
-        const characters = [];
-        querySnapshot.forEach((doc) => {
-            const data = doc.data();
-            const wins = data.wins || 0;
-            const losses = data.losses || 0;
-            const totalBattles = wins + losses;
-            const winRate = totalBattles > 0 ? (wins / totalBattles * 100).toFixed(1) : 0;
-            
-            characters.push({
-                id: doc.id,
-                name: data.name,
-                class: data.class,
-                wins,
-                losses,
-                totalBattles,
-                winRate: parseFloat(winRate),
-                imageUrl: data.imageUrl
-            });
-        });
-        
-        // 승률 기준으로 정렬 (승률이 같으면 패배 횟수가 적은 순으로, 그것도 같으면 승리 횟수가 많은 순으로)
-        characters.sort((a, b) => {
-            if (b.winRate === a.winRate) {
-                // 승률이 같으면 패배 횟수가 적은 순으로
-                if (a.losses !== b.losses) {
-                    return a.losses - b.losses;
-                }
-                // 패배 횟수도 같으면 승리 횟수가 많은 순으로
-                return b.wins - a.wins;
-            }
-            return b.winRate - a.winRate;
-        });
-        
-        // 상위 10개만 표시
-        const top10 = characters.slice(0, 10);
-        
-        if (top10.length === 0) {
-            rankingList.innerHTML = '<p>아직 배틀 기록이 없습니다.</p>';
-            return;
-        }
-        
-        rankingList.innerHTML = '';
-        top10.forEach((character, index) => {
-            const rankingItem = document.createElement('div');
-            rankingItem.className = 'ranking-item';
-            
-            // 캐릭터 이미지 URL 처리
-            const imageUrl = character.imageUrl || 'https://placehold.co/60x60/333/FFF?text=?';
-            
-            rankingItem.innerHTML = `
-                <div class="ranking-rank">#${index + 1}</div>
-                <img src="${imageUrl}" alt="${character.name}" class="ranking-character-image" onerror="this.src='https://placehold.co/60x60/333/FFF?text=?'">
-                <div class="ranking-info">
-                    <div class="ranking-name">${character.name}</div>
-                    <div class="ranking-class">${character.class}</div>
-                </div>
-                <div class="ranking-stats">${character.winRate}%<br>(${character.wins}승 ${character.losses}패)</div>
-            `;
-            
-            rankingItem.onclick = () => showRankingCharacterDetails(character);
-            rankingList.appendChild(rankingItem);
-        });
+        // 실시간 랭킹 데이터 사용 (Firebase 읽기 없음)
+        console.log(`실시간 랭킹 데이터 사용: ${rankingData.length}개 캐릭터`);
+        displayRankingData(rankingData);
         
     } catch (error) {
         console.error('Error loading ranking:', error);
@@ -4895,36 +5003,55 @@ async function loadRanking() {
     }
 }
 
-async function showRankingCharacterDetails(character) {
+// 랭킹 타이머 제거됨 - 실시간 데이터 사용으로 불필요
+
+// 랭킹 데이터를 화면에 표시하는 함수
+function displayRankingData(top10) {
+    if (top10.length === 0) {
+        rankingList.innerHTML = '<p>아직 배틀 기록이 없습니다.</p>';
+        return;
+    }
+    
+    rankingList.innerHTML = '';
+    top10.forEach((character, index) => {
+        const rankingItem = document.createElement('div');
+        rankingItem.className = 'ranking-item';
+        
+        // 캐릭터 이미지 URL 처리
+        const imageUrl = character.imageUrl || 'https://placehold.co/60x60/333/FFF?text=?';
+        
+        rankingItem.innerHTML = `
+            <div class="ranking-rank">#${index + 1}</div>
+            <img src="${imageUrl}" alt="${character.name}" class="ranking-character-image" onerror="this.src='https://placehold.co/60x60/333/FFF?text=?'">
+            <div class="ranking-info">
+                <div class="ranking-name">${character.name}</div>
+                <div class="ranking-class">${character.class}</div>
+            </div>
+            <div class="ranking-stats">${character.winRate}%<br>(${character.wins}승 ${character.losses}패)</div>
+        `;
+        
+        rankingItem.onclick = () => showRankingCharacterDetails(character);
+         rankingList.appendChild(rankingItem);
+     });
+     
+     // 실시간 데이터 사용으로 타이머 불필요
+ }
+
+function showRankingCharacterDetails(character) {
     try {
         // 페이지 상단으로 스크롤
         window.scrollTo(0, 0);
         
-        // Firebase에서 최신 캐릭터 데이터 가져오기 (업데이트된 스킬 반영)
+        // 실시간 데이터에서 최신 캐릭터 데이터 가져오기 (Firebase 읽기 없음)
         let fullCharacterData = character;
         
-        // 캐릭터 ID로 Firebase에서 최신 데이터 조회
-        try {
-            const allCharsQuery = query(collectionGroup(db, 'characters'));
-            const allCharsSnapshot = await getDocs(allCharsQuery);
-            
-            for (const charDoc of allCharsSnapshot.docs) {
-                const charData = charDoc.data();
-                if (charData.name === character.name) {
-                    fullCharacterData = { id: charDoc.id, ...charData, ...character };
-                    console.log('Firebase에서 최신 캐릭터 데이터 로드됨:', fullCharacterData);
-                    break;
-                }
-            }
-        } catch (firebaseError) {
-            console.warn('Firebase에서 최신 데이터 로드 실패, 캐시 데이터 사용:', firebaseError);
-            // Firebase 조회 실패 시 캐시된 데이터 사용
-            if (allCharactersCache && allCharactersCache.length > 0) {
-                const cachedCharacter = allCharactersCache.find(char => char.name === character.name);
-                if (cachedCharacter) {
-                    fullCharacterData = { ...cachedCharacter, ...character };
-                }
-            }
+        // 실시간 캐릭터 풀에서 최신 데이터 조회
+        const latestCharacter = allCharactersPool.find(char => char.name === character.name);
+        if (latestCharacter) {
+            fullCharacterData = { ...latestCharacter, ...character };
+            console.log('실시간 데이터에서 최신 캐릭터 데이터 로드됨:', fullCharacterData);
+        } else {
+            console.warn('실시간 데이터에서 캐릭터를 찾을 수 없음, 기본 데이터 사용:', character.name);
         }
         
         // 디버깅: 캐릭터 데이터 확인
@@ -5188,7 +5315,10 @@ async function generateBattleImage() {
             
             // 이미지와 함께 프롬프트 전송
             const imageData = character.imageUrl;
-            const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' }); // Vision 전용 모델
+            const model = genAI.getGenerativeModel({ 
+                model: 'gemini-2.0-flash-exp',
+                systemInstruction: koreanSystemInstruction
+            }); // Vision 전용 모델
             
             const result = await model.generateContent([
                 visionPrompt,

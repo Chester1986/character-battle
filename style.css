@@ -5018,6 +5018,27 @@ footer {
     }
 }
 
+/* 캐시 타이머 스타일 */
+.cache-timer {
+    background: rgba(74, 158, 255, 0.1);
+    border: 1px solid var(--accent-color);
+    border-radius: 8px;
+    padding: 10px 15px;
+    margin-bottom: 20px;
+    text-align: center;
+    font-size: 0.9em;
+}
+
+#ranking-timer-text {
+    color: var(--text-secondary);
+}
+
+#ranking-countdown {
+    color: var(--accent-color);
+    font-weight: bold;
+    font-family: var(--font-header);
+}
+
 .opponent-modal-header {
     position: relative;
     text-align: center;
