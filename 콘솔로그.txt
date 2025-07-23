@@ -1,0 +1,195 @@
+app.js?v=1753285864800:4314 Start battle button event listener added: <button id=​"start-battle-btn" class=​"hidden" disabled>​전투 시작​</button>​
+app.js?v=1753285864800:5919 사용자 검색 버튼 이벤트 리스너 추가됨
+app.js?v=1753285864800:5937 사용자 검색 입력창 이벤트 리스너 추가됨
+service-worker.js:1 서비스 워커 로드됨 / Service Worker Loaded
+app.js?v=1753285864800:287 🔄 실시간 리스너 초기화 중...
+app.js?v=1753285864800:320 ✅ 실시간 리스너 초기화 완료
+app.js?v=1753285864800:833 실시간 사용자 캐릭터 풀 사용: 0개 캐릭터
+app.js?v=1753285864800:306 ✅ 전체 캐릭터 풀 업데이트: 39개
+app.js?v=1753285864800:340 ✅ 사용자 캐릭터 풀 업데이트: 4개
+app.js?v=1753285864800:1223 showCharacterDetail 호출됨, 캐릭터 ID: VutN0ZZOKffVkMwRSAim
+app.js?v=1753285864800:1230 실시간 풀에서 최신 캐릭터 데이터 가져옴: 에어포스
+app.js?v=1753285864800:1231 캐릭터 소유자 ID: 4kTTVs7q2nY0xqNcq31myorKdJI2
+app.js?v=1753285864800:2191 실시간 캐릭터 풀에서 랭킹용 데이터 반환: 39개 캐릭터
+app.js?v=1753285864800:4272 findCharacterRef 호출됨, characterId: VutN0ZZOKffVkMwRSAim
+app.js?v=1753285864800:4273 현재 사용자 ID: 4kTTVs7q2nY0xqNcq31myorKdJI2
+app.js?v=1753285864800:4280 캐시된 데이터에서 찾음: users/4kTTVs7q2nY0xqNcq31myorKdJI2/characters/VutN0ZZOKffVkMwRSAim
+app.js?v=1753285864800:2226 전투 기록을 가져왔습니다: Array(10)
+app.js?v=1753285864800:1277 === 재생성 버튼 표시 조건 확인 ===
+app.js?v=1753285864800:1278 캐릭터 소유자 ID (원본): 4kTTVs7q2nY0xqNcq31myorKdJI2
+app.js?v=1753285864800:1279 캐릭터 소유자 ID (fallback 적용): 4kTTVs7q2nY0xqNcq31myorKdJI2
+app.js?v=1753285864800:1280 현재 사용자 ID: 4kTTVs7q2nY0xqNcq31myorKdJI2
+app.js?v=1753285864800:1281 현재 사용자 객체: Ae
+app.js?v=1753285864800:1282 소유권 일치 여부: true
+app.js?v=1753285864800:1435 startBattleFromDetail 호출됨, characterId: VutN0ZZOKffVkMwRSAim
+app.js?v=1753285864800:1436 현재 실시간 캐릭터 풀 길이: 39
+app.js?v=1753285864800:1447 캐릭터 찾음: 에어포스
+app.js?v=1753285864800:1451 플레이어 캐릭터 최신 데이터 가져오는 중: 에어포스
+app.js?v=1753285864800:4272 findCharacterRef 호출됨, characterId: VutN0ZZOKffVkMwRSAim
+app.js?v=1753285864800:4273 현재 사용자 ID: 4kTTVs7q2nY0xqNcq31myorKdJI2
+app.js?v=1753285864800:4280 캐시된 데이터에서 찾음: users/4kTTVs7q2nY0xqNcq31myorKdJI2/characters/VutN0ZZOKffVkMwRSAim
+app.js?v=1753285864800:1458 플레이어 최신 데이터 로드 완료: 에어포스
+app.js?v=1753285864800:1459 플레이어 공격 스킬 수: 3
+app.js?v=1753285864800:1460 플레이어 방어 스킬 수: 2
+app.js?v=1753285864800:1490 상대방 최신 데이터 가져오는 중: 악마의 활화산
+app.js?v=1753285864800:4272 findCharacterRef 호출됨, characterId: WEx2mCcrqE4owozzPihz
+app.js?v=1753285864800:4273 현재 사용자 ID: 4kTTVs7q2nY0xqNcq31myorKdJI2
+app.js?v=1753285864800:4280 캐시된 데이터에서 찾음: users/YHB2pufV0Ib5hhXUtp9gfy56zXv2/characters/WEx2mCcrqE4owozzPihz
+app.js?v=1753285864800:1497 상대방 최신 데이터 로드 완료: 악마의 활화산
+app.js?v=1753285864800:1498 상대방 공격 스킬 수: 2
+app.js?v=1753285864800:1499 상대방 방어 스킬 수: 2
+app.js?v=1753285864800:1514 상대방 선택됨: 악마의 활화산
+app.js?v=1753285864800:1632 최근 사용 스킬: Array(2)
+app.js?v=1753285864800:1633 자동 선택 여부: true
+app.js?v=1753285864800:1579 체크박스 개수: 5
+app.js?v=1753285864800:1581 체크박스 0 이벤트 리스너 추가: <input type=​"checkbox" id=​"matching-attack-skill-0" class=​"skill-checkbox" data-skill=​"{"name":​"진공 파열","description":​"주변 공기를 급속도로 제거하여 진공 상태를 만들어 압력을 폭발시키거나, 대상의 호흡을 일시적으로 봉쇄합니다. 다만, 마법 방어막이나 강력한 보호막을 두른 상대에게는 효과가 약해질 수 있습니다."}​" data-skill-type=​"attack">​
+app.js?v=1753285864800:1581 체크박스 1 이벤트 리스너 추가: <input type=​"checkbox" id=​"matching-attack-skill-1" class=​"skill-checkbox" data-skill=​"{"name":​"절대 현현:​ 그림자 군세","description":​"적의 외형과 스킬을 완벽하게 복제한 공기 실체를 생성하여 함께 공격하게 합니다. 단, 복제된 실체는 본체만큼의 지속적인 마나를 소모하며, 동시에 많은 수를 유지할 경우 마력 고갈이 빠르게 진행됩니다."}​" data-skill-type=​"attack">​
+app.js?v=1753285864800:1581 체크박스 2 이벤트 리스너 추가: <input type=​"checkbox" id=​"matching-attack-skill-2" class=​"skill-checkbox" data-skill=​"{"description":​"에어포스가 자신의 공기 원소를 급격히 압축하고 방출하여, 적과 동일한 외형과 능력을 지닌 환영 분신을 최대 3개까지 생성해 함께 공격합니다. 다만, 분신은 일정 시간 후 또는 일정 피해를 받으면 소멸하며, 진정한 자신의 힘을 일부만 부여할 수 있습니다.","name":​"대기 방출:​ 환영 분신술"}​" data-skill-type=​"attack" checked>​
+app.js?v=1753285864800:1581 체크박스 3 이벤트 리스너 추가: <input type=​"checkbox" id=​"matching-defense-skill-0" class=​"skill-checkbox" data-skill=​"{"description":​"강력한 공기의 흐름을 응축하여 투명하고 견고한 방벽을 생성, 물리적 공격이나 마법 투사체를 막아냅니다. 하지만, 장시간 강력한 압력을 받거나 집중된 원소 공격에는 서서히 균열이 생길 수 있습니다.","name":​"공기 방벽"}​" data-skill-type=​"defense">​
+app.js?v=1753285864800:1581 체크박스 4 이벤트 리스너 추가: <input type=​"checkbox" id=​"matching-defense-skill-1" class=​"skill-checkbox" data-skill=​"{"name":​"원소 재구성","description":​"주변 공기 원소를 분해하고 재구성하여, 짧은 시간 동안 원하는 형태의 단단한 실체나 섬광 등을 생성하여 공격을 막거나 교란합니다. 다만, 복잡하거나 대규모의 실체를 생성할수록 순간적인 마력 소모가 매우 커집니다."}​" data-skill-type=​"defense" checked>​
+app.js?v=1753285864800:1718 updateSelectedSkillsDisplay 호출됨, 선택된 스킬 수: 2
+app.js?v=1753285864800:1719 enterBattleBtn 요소: <button id=​"enter-battle-btn" class=​"battle-start-btn" onclick=​"enterBattle()​" style=​"display:​ block;​">​⚔️ 전투 돌입​</button>​
+app.js?v=1753285864800:1736 전투 돌입 버튼 찾음, 스킬 수: 2
+app.js?v=1753285864800:1738 2개 스킬 선택됨, 버튼 활성화
+app.js?v=1753285864800:1756 enterBattle 함수 호출됨
+app.js?v=1753285864800:1757 현재 선택된 스킬 수: 2
+app.js?v=1753285864800:1758 선택된 스킬: Array(2)
+app.js?v=1753285864800:1778 전투 돌입! 선택된 스킬: Array(2)
+app.js?v=1753285864800:1779 showView("battle") 호출 전
+app.js?v=1753285864800:1781 showView("battle") 호출 후
+app.js?v=1753285864800:1782 startBattleScreen() 호출 전
+app.js?v=1753285864800:1789 startBattleScreen 함수 시작
+app.js?v=1753285864800:1790 battleContent 요소: <div id=​"battle-content">​…​</div>​
+app.js?v=1753285864800:1791 playerCharacterForBattle: Object
+app.js?v=1753285864800:1792 opponentCharacterForBattle: Object
+app.js?v=1753285864800:1784 startBattleScreen() 호출 후
+app.js?v=1753285864800:3649 === 전투 시작 ===
+app.js?v=1753285864800:3653 battleInProgress 설정됨: true
+app.js?v=1753285864800:3662 전투 시작 - 요소들 확인:
+app.js?v=1753285864800:3663 newBattleGaugeContainer: <div id=​"new-battle-gauge-container" class=​"battle-gauge-container" style=​"display:​ block !important;​ visibility:​ visible !important;​ opacity:​ 1 !important;​ position:​ relative !important;​ z-index:​ 10 !important;​">​…​</div>​
+app.js?v=1753285864800:3664 gaugeFill: <div class=​"gauge-fill pulse" style=​"display:​ block !important;​ visibility:​ visible !important;​ height:​ 100% !important;​ width:​ 26.6667% !important;​ transition:​ width 1.2s ease-in-out !important;​">​…​</div>​
+app.js?v=1753285864800:3665 gaugePercentage: <span id=​"gauge-percentage">​80%​</span>​
+app.js?v=1753285864800:3666 gaugeStatusText: <div id=​"gauge-status-text" class=​"gauge-status">​전투가 치열해지고 있습니다!​</div>​
+app.js?v=1753285864800:3667 gaugeBar: <div id=​"new-battle-gauge-bar" class=​"gauge-bar active" style=​"display:​ block !important;​ visibility:​ visible !important;​ position:​ relative !important;​">​…​</div>​
+app.js?v=1753285864800:3698 게이지바 표시 완료
+app.js?v=1753285864800:3701 상대방 캐시된 데이터 사용: 악마의 활화산
+app.js?v=1753285864800:4337 상대방 최근 사용 스킬: Array(2)
+app.js?v=1753285864800:4341 상대방 최근 사용 스킬 2개를 사용합니다.
+app.js?v=1753285864800:3705 상대방 선택된 스킬: Array(2)
+app.js?v=1753285864800:3719 전투 데이터 준비 완료: Object
+app.js?v=1753285864800:3758 전투 초기화 완료, 동적 메시지 요소 생성됨
+app.js?v=1753285864800:3775 전투 스토리 생성 시작 (백그라운드)
+app.js?v=1753285864800:4577 Waiting for complete battle data...
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... Object
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... Object
+app.js?v=1753285864800:3806 === 턴 1 시작 ===
+app.js?v=1753285864800:3819 턴 1 결과: 턴 1: 악마의 활화산이(가) 반격합니다!
+app.js?v=1753285864800:3823 게이지 업데이트: 26.666666666666664%
+app.js?v=1753285864800:3827 게이지 업데이트: 26.666666666666664%
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+app.js?v=1753285864800:3806 === 턴 2 시작 ===
+app.js?v=1753285864800:3819 턴 2 결과: 턴 2: 승부의 결정적 순간이 다가옵니다!
+app.js?v=1753285864800:3823 게이지 업데이트: 53.33333333333333%
+app.js?v=1753285864800:3827 게이지 업데이트: 53.33333333333333%
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+app.js?v=1753285864800:3806 === 턴 3 시작 ===
+app.js?v=1753285864800:3819 턴 3 결과: 턴 3: 전투가 치열해지고 있습니다!
+app.js?v=1753285864800:3823 게이지 업데이트: 80%
+app.js?v=1753285864800:3827 게이지 업데이트: 80%
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+app.js?v=1753285864800:3858 === 최종 결과 결정 단계 ===
+app.js?v=1753285864800:3870 85% 게이지 업데이트 완료
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+app.js?v=1753285864800:3875 최종 판결 요청 중...
+app.js?v=1753285864800:213 🤖 gemini-2.5-flash 모델로 생성 중...
+app.js?v=1753285864800:230 Attempting with gemini-2.5-flash (attempt 1/2)
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+index.mjs:51   POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent 429 (Too Many Requests)
+(anonymous) @ index.mjs:51
+_ @ index.mjs:51
+await in _
+H @ index.mjs:100
+generateContent @ index.mjs:182
+generateWithFallback @ app.js?v=1753285864800:231
+getFinalVerdict @ app.js?v=1753285864800:4956
+startTurnBasedBattleNew @ app.js?v=1753285864800:3876
+[NEW] Explain Console errors by using Copilot in Edge: click
+         
+         to explain an error. 
+        Learn more
+        Don't show again
+app.js?v=1753285864800:248  ❌ gemini-2.5-flash attempt 1 failed: [GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent: [429 ] You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. [{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests","quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier","quotaDimensions":{"model":"gemini-2.5-flash","location":"global"},"quotaValue":"250"}]},{"@type":"type.googleapis.com/google.rpc.Help","links":[{"description":"Learn more about Gemini API quotas","url":"https://ai.google.dev/gemini-api/docs/rate-limits"}]},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"35s"}]
+generateWithFallback @ app.js?v=1753285864800:248
+await in generateWithFallback
+getFinalVerdict @ app.js?v=1753285864800:4956
+startTurnBasedBattleNew @ app.js?v=1753285864800:3876
+app.js?v=1753285864800:258 🔄 Server error or limit reached for gemini-2.5-flash, switching to next model
+app.js?v=1753285864800:213 ❌ gemini-2.5-flash 모델 실패, 다음 모델 시도 중...
+app.js?v=1753285864800:213 🔄 폴백 모델 gemini-2.0-flash로 전환...
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+app.js?v=1753285864800:230 Attempting with gemini-2.0-flash (attempt 1/2)
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+index.mjs:51   POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent 429 (Too Many Requests)
+(anonymous) @ index.mjs:51
+_ @ index.mjs:51
+await in _
+H @ index.mjs:100
+generateContent @ index.mjs:182
+generateWithFallback @ app.js?v=1753285864800:231
+await in generateWithFallback
+getFinalVerdict @ app.js?v=1753285864800:4956
+startTurnBasedBattleNew @ app.js?v=1753285864800:3876
+app.js?v=1753285864800:248  ❌ gemini-2.0-flash attempt 1 failed: [GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent: [429 ] You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. [{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests","quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier","quotaDimensions":{"model":"gemini-2.0-flash","location":"global"},"quotaValue":"200"}]},{"@type":"type.googleapis.com/google.rpc.Help","links":[{"description":"Learn more about Gemini API quotas","url":"https://ai.google.dev/gemini-api/docs/rate-limits"}]},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"34s"}]
+generateWithFallback @ app.js?v=1753285864800:248
+await in generateWithFallback
+getFinalVerdict @ app.js?v=1753285864800:4956
+startTurnBasedBattleNew @ app.js?v=1753285864800:3876
+app.js?v=1753285864800:258 🔄 Server error or limit reached for gemini-2.0-flash, switching to next model
+app.js?v=1753285864800:213 ❌ gemini-2.0-flash 모델 실패, 다음 모델 시도 중...
+app.js?v=1753285864800:213 🔄 폴백 모델 gemini-2.5-flash-lite로 전환...
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+app.js?v=1753285864800:230 Attempting with gemini-2.5-flash-lite (attempt 1/2)
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(0), winner: null, result: null}
+index.mjs:51   POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent 429 (Too Many Requests)
+(anonymous) @ index.mjs:51
+_ @ index.mjs:51
+await in _
+H @ index.mjs:100
+generateContent @ index.mjs:182
+generateWithFallback @ app.js?v=1753285864800:231
+await in generateWithFallback
+getFinalVerdict @ app.js?v=1753285864800:4956
+startTurnBasedBattleNew @ app.js?v=1753285864800:3876
+app.js?v=1753285864800:248  ❌ gemini-2.5-flash-lite attempt 1 failed: [GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent: [429 ] You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. [{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests","quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier","quotaDimensions":{"location":"global","model":"gemini-2.5-flash-lite"},"quotaValue":"1000"}]},{"@type":"type.googleapis.com/google.rpc.Help","links":[{"description":"Learn more about Gemini API quotas","url":"https://ai.google.dev/gemini-api/docs/rate-limits"}]},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"33s"}]
+generateWithFallback @ app.js?v=1753285864800:248
+await in generateWithFallback
+getFinalVerdict @ app.js?v=1753285864800:4956
+startTurnBasedBattleNew @ app.js?v=1753285864800:3876
+app.js?v=1753285864800:258 🔄 Server error or limit reached for gemini-2.5-flash-lite, switching to next model
+app.js?v=1753285864800:213 ❌ gemini-2.5-flash-lite 모델 실패, 다음 모델 시도 중...
+app.js?v=1753285864800:4033  전투 진행 중 오류: Error: All fallback models failed. Please try again later.
+    at generateWithFallback (app.js?v=1753285864800:276:11)
+    at async getFinalVerdict (app.js?v=1753285864800:4956:20)
+    at async startTurnBasedBattleNew (app.js?v=1753285864800:3876:23)
+startTurnBasedBattleNew @ app.js?v=1753285864800:4033
+app.js?v=1753285864800:4045 전투 완료 - battleInProgress 해제됨: false
+app.js?v=1753285864800:4057 전투 데이터 저장 완료: {player: {…}, opponent: {…}, playerSkills: Array(2), opponentSkills: Array(2), battleTurns: Array(3), …}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(3), winner: undefined, result: undefined}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(3), winner: undefined, result: undefined}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(3), winner: undefined, result: undefined}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(3), winner: undefined, result: undefined}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(3), winner: undefined, result: undefined}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(3), winner: undefined, result: undefined}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(3), winner: undefined, result: undefined}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(3), winner: undefined, result: undefined}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(3), winner: undefined, result: undefined}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(3), winner: undefined, result: undefined}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(3), winner: undefined, result: undefined}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(3), winner: undefined, result: undefined}
+app.js?v=1753285864800:4582 Battle data not ready yet, waiting... {battleTurns: Array(3), winner: undefined, result: undefined}

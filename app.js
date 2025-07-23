@@ -18,16 +18,23 @@ const firebaseConfig = {
 };
 
 // Craiyon API는 무료로 사용 가능하며 별도의 API 키가 필요하지 않습니다.
-const GEMINI_API_KEY = "AIzaSyBTbqLGoY22MHjgXP1uWh_X-oCpoeEBl1Q"; // 텍스트 생성용 Gemini API
+const GEMINI_API_KEY = "AIzaSyBTbqLGoY22MHjgXP1uWh_X-oCpoeEBl1Q"; // 첫 번째 Gemini API 키
+const GEMINI_API_KEY_2 = "AIzaSyBWGh2EuJ90wkCEJ1knfJbjl1XsJX6I1nI"; // 두 번째 Gemini API 키 (폴백용)
 
 // --- INITIALIZATION ---
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+// 첫 번째 API 키로 초기화
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+// 두 번째 API 키로 초기화 (폴백용)
+const genAI2 = new GoogleGenerativeAI(GEMINI_API_KEY_2);
+
 // 텍스트 생성용 Gemini 모델들 (폴백 시스템) - 한국어 응답 강제
 const koreanSystemInstruction = "You must respond in Korean only. All narrative text, descriptions, and story content must be written in Korean. Character names, skill names, and proper nouns can remain in their original language, but all other text must be in Korean.";
+
+// 첫 번째 API 키 모델들
 const primaryModel = genAI.getGenerativeModel({ 
     model: 'gemini-2.5-flash',
     systemInstruction: koreanSystemInstruction
@@ -40,13 +47,33 @@ const fallbackModel2 = genAI.getGenerativeModel({
     model: 'gemini-2.5-flash-lite',
     systemInstruction: koreanSystemInstruction
 });
+
+// 두 번째 API 키 모델들 (폴백용)
+const primaryModel2 = genAI2.getGenerativeModel({ 
+    model: 'gemini-2.5-flash',
+    systemInstruction: koreanSystemInstruction
+});
+const fallbackModel1_2 = genAI2.getGenerativeModel({ 
+    model: 'gemini-2.0-flash',
+    systemInstruction: koreanSystemInstruction
+});
+const fallbackModel2_2 = genAI2.getGenerativeModel({ 
+    model: 'gemini-2.5-flash-lite',
+    systemInstruction: koreanSystemInstruction
+});
+
 // 이미지 생성은 Craiyon API를 사용합니다.
 
-// 모델 폴백 순서 정의
+// 2단계 모델 폴백 순서 정의 (API키1 → API키2)
 const modelFallbackOrder = [
-    { name: 'gemini-2.5-flash', model: primaryModel },
-    { name: 'gemini-2.0-flash', model: fallbackModel1 },
-    { name: 'gemini-2.5-flash-lite', model: fallbackModel2 }
+    // 첫 번째 API 키로 3개 모델 시도
+    { name: 'gemini-2.5-flash', model: primaryModel, apiKey: 1 },
+    { name: 'gemini-2.0-flash', model: fallbackModel1, apiKey: 1 },
+    { name: 'gemini-2.5-flash-lite', model: fallbackModel2, apiKey: 1 },
+    // 두 번째 API 키로 3개 모델 시도
+    { name: 'gemini-2.5-flash (API키2)', model: primaryModel2, apiKey: 2 },
+    { name: 'gemini-2.0-flash (API키2)', model: fallbackModel1_2, apiKey: 2 },
+    { name: 'gemini-2.5-flash-lite (API키2)', model: fallbackModel2_2, apiKey: 2 }
 ];
 
 // --- STATE ---
@@ -215,19 +242,25 @@ function updateModelStatus(modelName, status = 'trying') {
 
 async function generateWithFallback(prompt, maxRetriesPerModel = 2) {
     for (let modelIndex = 0; modelIndex < modelFallbackOrder.length; modelIndex++) {
-        const { name: modelName, model } = modelFallbackOrder[modelIndex];
+        const { name: modelName, model, apiKey } = modelFallbackOrder[modelIndex];
+        
+        // API 키 전환 시점 확인 및 메시지 표시
+        if (modelIndex === 3) {
+            updateProgress(null, '🔄 첫 번째 API 키 할당량 초과, 두 번째 API 키로 전환 중...');
+            await new Promise(res => setTimeout(res, 1000)); // 사용자가 메시지를 볼 수 있도록 대기
+        }
         
         // 첫 번째 모델이 아닌 경우 폴백 상태 표시
-        if (modelIndex > 0) {
+        if (modelIndex > 0 && modelIndex !== 3) {
             updateModelStatus(modelName, 'fallback');
             await new Promise(res => setTimeout(res, 500)); // 사용자가 메시지를 볼 수 있도록 잠시 대기
-        } else {
+        } else if (modelIndex === 0 || modelIndex === 3) {
             updateModelStatus(modelName, 'trying');
         }
         
         for (let attempt = 1; attempt <= maxRetriesPerModel; attempt++) {
             try {
-                console.log(`Attempting with ${modelName} (attempt ${attempt}/${maxRetriesPerModel})`);
+                console.log(`Attempting with ${modelName} (API키${apiKey}) (attempt ${attempt}/${maxRetriesPerModel})`);
                 const result = await model.generateContent(prompt);
                 
                 // 응답이 비어있거나 너무 짧은 경우 체크
@@ -240,12 +273,12 @@ async function generateWithFallback(prompt, maxRetriesPerModel = 2) {
                     throw new Error('Response too short, likely incomplete');
                 }
                 
-                console.log(`✅ Success with ${modelName}`);
+                console.log(`✅ Success with ${modelName} (API키${apiKey})`);
                 updateModelStatus(modelName, 'success');
                 return result;
                 
             } catch (error) {
-                console.warn(`❌ ${modelName} attempt ${attempt} failed:`, error.message);
+                console.warn(`❌ ${modelName} (API키${apiKey}) attempt ${attempt} failed:`, error.message);
                 
                 // 500 내부 서버 오류, 토큰 한도 초과나 특정 오류인 경우 즉시 다음 모델로
                 if (error.message.includes('500') ||
@@ -255,7 +288,7 @@ async function generateWithFallback(prompt, maxRetriesPerModel = 2) {
                     error.message.includes('limit') || 
                     error.message.includes('RESOURCE_EXHAUSTED') ||
                     error.message.includes('RATE_LIMIT_EXCEEDED')) {
-                    console.log(`🔄 Server error or limit reached for ${modelName}, switching to next model`);
+                    console.log(`🔄 Server error or limit reached for ${modelName} (API키${apiKey}), switching to next model`);
                     updateModelStatus(modelName, 'failed');
                     break; // 다음 모델로 즉시 전환
                 }
@@ -264,7 +297,7 @@ async function generateWithFallback(prompt, maxRetriesPerModel = 2) {
                 if (attempt < maxRetriesPerModel) {
                     await new Promise(res => setTimeout(res, 1000 * attempt));
                 } else {
-                    console.log(`🔄 All attempts failed for ${modelName}, trying next model`);
+                    console.log(`🔄 All attempts failed for ${modelName} (API키${apiKey}), trying next model`);
                     updateModelStatus(modelName, 'failed');
                 }
             }
@@ -272,8 +305,8 @@ async function generateWithFallback(prompt, maxRetriesPerModel = 2) {
     }
     
     // 모든 모델이 실패한 경우
-    updateProgress(null, '❌ 모든 AI 모델이 실패했습니다. 잠시 후 다시 시도해주세요.');
-    throw new Error('All fallback models failed. Please try again later.');
+    updateProgress(null, '❌ 모든 API 키와 모델이 실패했습니다. 잠시 후 다시 시도해주세요.');
+    throw new Error('All fallback models and API keys failed. Please try again later.');
 }
 
 // 기존 함수명과의 호환성을 위한 별칭
