@@ -312,34 +312,75 @@ async function generateWithFallback(prompt, maxRetriesPerModel = 2) {
 // 기존 함수명과의 호환성을 위한 별칭
 const generateWithRetry = generateWithFallback;
 
-// --- REAL-TIME LISTENERS ---
-// 실시간 리스너 초기화
+// --- CACHING SYSTEM ---
+let characterCache = new Map();
+let cacheTimestamps = new Map();
+const CACHE_DURATION = 5 * 60 * 1000; // 5분 캐시
+let lastRankingUpdate = 0;
+const RANKING_UPDATE_INTERVAL = 5 * 60 * 1000; // 5분마다 랭킹 업데이트
+
+// 캐시 유효성 검사
+function isCacheValid(key) {
+    const timestamp = cacheTimestamps.get(key);
+    return timestamp && (Date.now() - timestamp) < CACHE_DURATION;
+}
+
+// 캐시에서 캐릭터 데이터 가져오기
+function getCachedCharacter(characterId) {
+    if (isCacheValid(characterId)) {
+        return characterCache.get(characterId);
+    }
+    return null;
+}
+
+// 캐시에 캐릭터 데이터 저장
+function setCachedCharacter(characterId, data) {
+    characterCache.set(characterId, data);
+    cacheTimestamps.set(characterId, Date.now());
+}
+
+// --- OPTIMIZED REAL-TIME LISTENERS ---
+// 실시간 리스너 초기화 (최적화됨)
 function initializeRealTimeListeners() {
     if (isRealTimeInitialized) return;
     
-    console.log('🔄 실시간 리스너 초기화 중...');
+    console.log('🔄 최적화된 실시간 리스너 초기화 중...');
     
-    // 모든 캐릭터 실시간 리스너
+    // 선택적 캐릭터 실시간 리스너 (신규 캐릭터 감지용)
     const allCharactersQuery = collectionGroup(db, 'characters');
     allCharactersUnsubscribe = onSnapshot(allCharactersQuery, (snapshot) => {
-        allCharactersPool = [];
+        const newCharacters = [];
         snapshot.forEach((doc) => {
             const data = doc.data();
             const characterRef = doc.ref;
             const pathParts = characterRef.path.split('/');
             const userId = pathParts[1]; // users/{userId}/characters/{characterId}
             
-            allCharactersPool.push({
+            const character = {
                 id: doc.id,
                 userId: userId,
                 ...data
-            });
+            };
+            
+            newCharacters.push(character);
+            
+            // 캐시 업데이트 (신규 또는 변경된 캐릭터만)
+            const existing = allCharactersPool.find(c => c.id === doc.id);
+            if (!existing || existing.lastModified !== data.lastModified) {
+                setCachedCharacter(doc.id, character);
+            }
         });
         
+        allCharactersPool = newCharacters;
         console.log(`✅ 전체 캐릭터 풀 업데이트: ${allCharactersPool.length}개`);
         
-        // 랭킹 데이터 실시간 업데이트
-        updateRankingData();
+        // 배치 랭킹 업데이트 (5분마다만)
+        const now = Date.now();
+        if (now - lastRankingUpdate > RANKING_UPDATE_INTERVAL) {
+            updateRankingData();
+            lastRankingUpdate = now;
+            console.log('🔄 배치 랭킹 업데이트 실행');
+        }
         
         // 랭킹 모달이 열려있다면 UI 업데이트
         if (!rankingModal.classList.contains('hidden')) {
@@ -350,7 +391,7 @@ function initializeRealTimeListeners() {
     });
     
     isRealTimeInitialized = true;
-    console.log('✅ 실시간 리스너 초기화 완료');
+    console.log('✅ 최적화된 실시간 리스너 초기화 완료');
 }
 
 // 사용자별 캐릭터 실시간 리스너 초기화
@@ -1463,9 +1504,9 @@ async function showCharacterDetail(character) {
     showView('character-detail');
 }
 
-// 상세 화면에서 전투 시작 - 매칭 화면으로 이동
+// 상세 화면에서 전투 시작 - 매칭 화면으로 이동 (최적화됨)
 async function startBattleFromDetail(characterId) {
-    console.log('startBattleFromDetail 호출됨, characterId:', characterId);
+    console.log('🚀 startBattleFromDetail 호출됨 (최적화), characterId:', characterId);
     console.log('현재 실시간 캐릭터 풀 길이:', allCharactersPool.length);
     
     let character = allCharactersPool.find(c => c.id === characterId) || null;
@@ -1479,33 +1520,43 @@ async function startBattleFromDetail(characterId) {
     if (character) {
         console.log('캐릭터 찾음:', character.name);
         
-        // 플레이어 캐릭터의 최신 데이터를 Firebase에서 가져오기
+        // 플레이어 캐릭터의 최신 데이터를 캐시 우선으로 가져오기
         try {
-            console.log('플레이어 캐릭터 최신 데이터 가져오는 중:', character.name);
-            const playerRef = await findCharacterRef(character.id);
-            if (playerRef) {
-                const playerDoc = await getDoc(playerRef);
-                if (playerDoc.exists()) {
-                    const latestPlayerData = { id: playerDoc.id, ...playerDoc.data() };
-                    playerCharacterForBattle = latestPlayerData;
-                    console.log('플레이어 최신 데이터 로드 완료:', latestPlayerData.name);
-                    console.log('플레이어 공격 스킬 수:', latestPlayerData.attack_skills?.length || 0);
-                    console.log('플레이어 방어 스킬 수:', latestPlayerData.defense_skills?.length || 0);
+            console.log('💾 플레이어 캐릭터 캐시 확인 중:', character.name);
+            let cachedPlayer = getCachedCharacter(character.id);
+            
+            if (cachedPlayer) {
+                console.log('✅ 캐시에서 플레이어 데이터 사용:', cachedPlayer.name);
+                playerCharacterForBattle = cachedPlayer;
+            } else {
+                console.log('🔄 캐시 없음, Firebase에서 플레이어 데이터 가져오는 중');
+                const playerRef = await findCharacterRef(character.id);
+                if (playerRef) {
+                    const playerDoc = await getDoc(playerRef);
+                    if (playerDoc.exists()) {
+                        const latestPlayerData = { id: playerDoc.id, ...playerDoc.data() };
+                        setCachedCharacter(character.id, latestPlayerData); // 캐시에 저장
+                        playerCharacterForBattle = latestPlayerData;
+                        console.log('✅ Firebase에서 플레이어 데이터 로드 및 캐시 저장:', latestPlayerData.name);
+                    } else {
+                        console.log('플레이어 문서가 존재하지 않음, 실시간 풀 데이터 사용');
+                        playerCharacterForBattle = character;
+                    }
                 } else {
-                    console.log('플레이어 문서가 존재하지 않음, 캐시 데이터 사용');
+                    console.log('플레이어 참조를 찾을 수 없음, 실시간 풀 데이터 사용');
                     playerCharacterForBattle = character;
                 }
-            } else {
-                console.log('플레이어 참조를 찾을 수 없음, 캐시 데이터 사용');
-                playerCharacterForBattle = character;
             }
+            
+            console.log('플레이어 공격 스킬 수:', playerCharacterForBattle.attack_skills?.length || 0);
+            console.log('플레이어 방어 스킬 수:', playerCharacterForBattle.defense_skills?.length || 0);
         } catch (error) {
             console.error('플레이어 최신 데이터 가져오기 실패:', error);
-            console.log('캐시 데이터로 대체');
+            console.log('실시간 풀 데이터로 대체');
             playerCharacterForBattle = character;
         }
         
-        // 상대방 찾기 - 자신의 캐릭터와 같은 사용자의 캐릭터 제외
+        // 상대방 찾기 - 자신의 캐릭터와 같은 사용자의 캐릭터 제외 (최적화됨)
         if (allCharactersPool.length > 1) {
             const availableOpponents = allCharactersPool.filter(c => 
                 c.id !== character.id && c.userId !== currentUser.uid
@@ -1518,33 +1569,43 @@ async function startBattleFromDetail(characterId) {
             
             const randomOpponent = availableOpponents[Math.floor(Math.random() * availableOpponents.length)];
             
-            // 상대방의 최신 데이터를 Firebase에서 가져오기
+            // 상대방의 최신 데이터를 캐시 우선으로 가져오기
             try {
-                console.log('상대방 최신 데이터 가져오는 중:', randomOpponent.name);
-                const opponentRef = await findCharacterRef(randomOpponent.id);
-                if (opponentRef) {
-                    const opponentDoc = await getDoc(opponentRef);
-                    if (opponentDoc.exists()) {
-                        const latestOpponentData = { id: opponentDoc.id, ...opponentDoc.data() };
-                        opponentCharacterForBattle = latestOpponentData;
-                        console.log('상대방 최신 데이터 로드 완료:', latestOpponentData.name);
-                        console.log('상대방 공격 스킬 수:', latestOpponentData.attack_skills?.length || 0);
-                        console.log('상대방 방어 스킬 수:', latestOpponentData.defense_skills?.length || 0);
+                console.log('💾 상대방 캐릭터 캐시 확인 중:', randomOpponent.name);
+                let cachedOpponent = getCachedCharacter(randomOpponent.id);
+                
+                if (cachedOpponent) {
+                    console.log('✅ 캐시에서 상대방 데이터 사용:', cachedOpponent.name);
+                    opponentCharacterForBattle = cachedOpponent;
+                } else {
+                    console.log('🔄 캐시 없음, Firebase에서 상대방 데이터 가져오는 중');
+                    const opponentRef = await findCharacterRef(randomOpponent.id);
+                    if (opponentRef) {
+                        const opponentDoc = await getDoc(opponentRef);
+                        if (opponentDoc.exists()) {
+                            const latestOpponentData = { id: opponentDoc.id, ...opponentDoc.data() };
+                            setCachedCharacter(randomOpponent.id, latestOpponentData); // 캐시에 저장
+                            opponentCharacterForBattle = latestOpponentData;
+                            console.log('✅ Firebase에서 상대방 데이터 로드 및 캐시 저장:', latestOpponentData.name);
+                        } else {
+                            console.log('상대방 문서가 존재하지 않음, 실시간 풀 데이터 사용');
+                            opponentCharacterForBattle = randomOpponent;
+                        }
                     } else {
-                        console.log('상대방 문서가 존재하지 않음, 캐시 데이터 사용');
+                        console.log('상대방 참조를 찾을 수 없음, 실시간 풀 데이터 사용');
                         opponentCharacterForBattle = randomOpponent;
                     }
-                } else {
-                    console.log('상대방 참조를 찾을 수 없음, 캐시 데이터 사용');
-                    opponentCharacterForBattle = randomOpponent;
                 }
+                
+                console.log('상대방 공격 스킬 수:', opponentCharacterForBattle.attack_skills?.length || 0);
+                console.log('상대방 방어 스킬 수:', opponentCharacterForBattle.defense_skills?.length || 0);
             } catch (error) {
                 console.error('상대방 최신 데이터 가져오기 실패:', error);
-                console.log('캐시 데이터로 대체');
+                console.log('실시간 풀 데이터로 대체');
                 opponentCharacterForBattle = randomOpponent;
             }
             
-            console.log('상대방 선택됨:', opponentCharacterForBattle.name);
+            console.log('🎯 상대방 선택됨:', opponentCharacterForBattle.name);
             
             // 매칭 화면으로 이동
             showView('matching');
@@ -2404,6 +2465,11 @@ if (backToListBtn) {
     });
 }
 
+// 상대방 선택 페이지네이션 변수
+let currentOpponentPage = 1;
+const OPPONENTS_PER_PAGE = 6;
+let availableOpponents = [];
+
 if (findOpponentBtn) {
     findOpponentBtn.addEventListener('click', () => {
         findOpponentBtn.disabled = true;
@@ -2412,9 +2478,9 @@ if (findOpponentBtn) {
 
         try {
             // 실시간 데이터에서 상대 찾기 (Firebase 읽기 없음)
-            const opponents = allCharactersPool.filter(char => char.userId !== currentUser.uid);
+            availableOpponents = allCharactersPool.filter(char => char.userId !== currentUser.uid);
 
-            if (opponents.length === 0) {
+            if (availableOpponents.length === 0) {
                 opponentBattleCard.innerHTML = '<p>싸울 상대가 아직 없습니다. 다른 유저가 캐릭터를 만들 때까지 기다려주세요.</p>';
                 if (battleGuideText) {
                     battleGuideText.textContent = '현재 대결 가능한 상대가 없습니다.';
@@ -2423,14 +2489,10 @@ if (findOpponentBtn) {
                 return;
             }
 
-            // 랜덤 상대 선택
-            const randomIndex = Math.floor(Math.random() * opponents.length);
-            opponentCharacterForBattle = opponents[randomIndex];
+            console.log(`총 ${availableOpponents.length}명의 상대 발견`);
 
-            console.log(`상대 매칭 완료: ${opponentCharacterForBattle.name} (총 ${opponents.length}명 중 선택)`);
-
-            // 매칭된 상대방 화면으로 전환
-            showMatchedOpponentScreen();
+            // 상대방 선택 화면 표시
+            showOpponentSelectionScreen();
 
         } catch (error) {
             console.error("Error finding opponent: ", error);
@@ -2466,6 +2528,158 @@ function resetBattleArena() {
     const matchedScreen = document.getElementById('matched-opponent-screen');
     if (matchedScreen) {
         matchedScreen.remove();
+    }
+    
+    // 상대방 선택 화면 제거
+    const selectionScreen = document.getElementById('opponent-selection-screen');
+    if (selectionScreen) {
+        selectionScreen.remove();
+    }
+}
+
+// 상대방 목록을 페이지네이션으로 표시
+function displayOpponentsWithPagination() {
+    const opponentsGrid = document.getElementById('opponents-grid');
+    const paginationContainer = document.getElementById('opponent-pagination');
+    
+    if (!opponentsGrid || !paginationContainer) return;
+    
+    const totalPages = Math.ceil(availableOpponents.length / OPPONENTS_PER_PAGE);
+    const startIndex = (currentOpponentPage - 1) * OPPONENTS_PER_PAGE;
+    const endIndex = startIndex + OPPONENTS_PER_PAGE;
+    const currentOpponents = availableOpponents.slice(startIndex, endIndex);
+    
+    // 상대방 카드들 표시
+    opponentsGrid.innerHTML = '';
+    currentOpponents.forEach(opponent => {
+        const opponentCard = document.createElement('div');
+        opponentCard.className = 'opponent-selection-card';
+        opponentCard.onclick = () => selectOpponent(opponent);
+        
+        // 승률 계산
+        const totalBattles = (opponent.wins || 0) + (opponent.losses || 0);
+        const winRate = totalBattles > 0 ? Math.round((opponent.wins || 0) / totalBattles * 100) : 0;
+        
+        opponentCard.innerHTML = `
+            <img src="${opponent.imageUrl || 'https://placehold.co/150x150/333/FFF?text=?'}" 
+                 alt="${opponent.name}" class="opponent-card-image">
+            <div class="opponent-card-info">
+                <h4>${opponent.name}</h4>
+                <p class="opponent-card-class">${opponent.class}</p>
+                <p class="opponent-card-stats">승률: ${winRate}% (${opponent.wins || 0}승 ${opponent.losses || 0}패)</p>
+            </div>
+        `;
+        
+        opponentsGrid.appendChild(opponentCard);
+    });
+    
+    // 페이지네이션 컨트롤 표시
+    if (totalPages > 1) {
+        paginationContainer.innerHTML = `
+            <div class="opponent-pagination-info">
+                ${startIndex + 1}-${Math.min(endIndex, availableOpponents.length)} / ${availableOpponents.length}명
+            </div>
+            <div class="opponent-pagination-controls">
+                <button class="opponent-page-btn" ${currentOpponentPage === 1 ? 'disabled' : ''} 
+                        onclick="changeOpponentPage(${currentOpponentPage - 1})">
+                    이전
+                </button>
+                <div class="opponent-page-numbers">
+                    ${generateOpponentPageNumbers(currentOpponentPage, totalPages)}
+                </div>
+                <button class="opponent-page-btn" ${currentOpponentPage === totalPages ? 'disabled' : ''} 
+                        onclick="changeOpponentPage(${currentOpponentPage + 1})">
+                    다음
+                </button>
+            </div>
+        `;
+    } else {
+        paginationContainer.innerHTML = `
+            <div class="opponent-pagination-info">
+                총 ${availableOpponents.length}명
+            </div>
+        `;
+    }
+}
+
+// 상대방 페이지 번호 생성
+function generateOpponentPageNumbers(currentPage, totalPages) {
+    let pageNumbers = '';
+    const maxVisiblePages = 5;
+    let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+    let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+    
+    if (endPage - startPage + 1 < maxVisiblePages) {
+        startPage = Math.max(1, endPage - maxVisiblePages + 1);
+    }
+    
+    for (let i = startPage; i <= endPage; i++) {
+        pageNumbers += `
+            <button class="opponent-page-number ${i === currentPage ? 'active' : ''}" 
+                    onclick="changeOpponentPage(${i})">
+                ${i}
+            </button>
+        `;
+    }
+    
+    return pageNumbers;
+}
+
+// 상대방 페이지 변경
+function changeOpponentPage(page) {
+    const totalPages = Math.ceil(availableOpponents.length / OPPONENTS_PER_PAGE);
+    if (page >= 1 && page <= totalPages) {
+        currentOpponentPage = page;
+        displayOpponentsWithPagination();
+    }
+}
+
+// 상대방 선택
+function selectOpponent(opponent) {
+    opponentCharacterForBattle = opponent;
+    console.log(`상대 선택: ${opponent.name}`);
+    
+    // 상대방 선택 화면 제거
+    const selectionScreen = document.getElementById('opponent-selection-screen');
+    if (selectionScreen) {
+        selectionScreen.remove();
+    }
+    
+    // 매칭된 상대방 화면으로 전환
+    showMatchedOpponentScreen();
+}
+
+// 랜덤 상대 선택
+function selectRandomOpponent() {
+    if (availableOpponents.length === 0) return;
+    
+    const randomIndex = Math.floor(Math.random() * availableOpponents.length);
+    const randomOpponent = availableOpponents[randomIndex];
+    selectOpponent(randomOpponent);
+}
+
+// 상대방 선택에서 아레나로 돌아가기
+function backToArenaFromSelection() {
+    // 상대방 선택 화면 제거
+    const selectionScreen = document.getElementById('opponent-selection-screen');
+    if (selectionScreen) {
+        selectionScreen.remove();
+    }
+    
+    // 기존 UI 복원
+    const battleArenaContainer = document.getElementById('battle-arena-container');
+    const battleControls = document.getElementById('battle-controls');
+    
+    if (battleArenaContainer) battleArenaContainer.classList.remove('hidden');
+    if (battleControls) battleControls.classList.remove('hidden');
+    
+    // 상대 찾기 버튼 활성화
+    if (findOpponentBtn) findOpponentBtn.disabled = false;
+    
+    // 가이드 텍스트 복원
+    const battleGuideText = document.getElementById('battle-guide-text');
+    if (battleGuideText) {
+        battleGuideText.textContent = '내 캐릭터 목록에서 전투에 내보낼 캐릭터를 선택하세요.';
     }
 }
 
@@ -2598,6 +2812,12 @@ function resetBattleStateCompletely() {
             skillItem.classList.remove('selected', 'hover');
         }
     });
+    
+    // 상대방 선택 화면도 제거
+    const selectionScreen = document.getElementById('opponent-selection-screen');
+    if (selectionScreen) {
+        selectionScreen.remove();
+    }
 }
 
 // 전투 포기 후 매칭 화면으로 돌아가는 함수
@@ -2722,6 +2942,54 @@ function displaySkillSelection() {
 }
 
 // 매칭된 상대방 화면 표시 함수
+// 상대방 선택 화면 표시
+function showOpponentSelectionScreen() {
+    // 페이지 상단으로 스크롤
+    window.scrollTo(0, 0);
+    
+    // 기존 전투 UI 숨기기
+    const battleArenaContainer = document.getElementById('battle-arena-container');
+    const battleControls = document.getElementById('battle-controls');
+    
+    if (battleArenaContainer) battleArenaContainer.classList.add('hidden');
+    if (battleControls) battleControls.classList.add('hidden');
+    
+    // 상대방 선택 화면 생성
+    const selectionScreen = document.createElement('div');
+    selectionScreen.id = 'opponent-selection-screen';
+    selectionScreen.className = 'opponent-selection-screen';
+    
+    selectionScreen.innerHTML = `
+        <div class="selection-header">
+            <h3>상대방 선택</h3>
+            <p>전투할 상대를 선택하세요 (총 ${availableOpponents.length}명)</p>
+        </div>
+        <div id="opponents-grid" class="opponents-grid"></div>
+        <div id="opponent-pagination" class="opponent-pagination"></div>
+        <div class="selection-actions">
+            <button id="random-opponent-btn" class="random-opponent-btn">랜덤 매칭</button>
+            <button id="back-to-arena-btn" class="back-to-arena-btn">돌아가기</button>
+        </div>
+    `;
+    
+    // 기존 arena에 추가
+    const arena = document.getElementById('arena');
+    arena.appendChild(selectionScreen);
+    
+    // 상대방 목록 표시
+    displayOpponentsWithPagination();
+    
+    // 이벤트 리스너 추가
+    document.getElementById('random-opponent-btn').addEventListener('click', selectRandomOpponent);
+    document.getElementById('back-to-arena-btn').addEventListener('click', backToArenaFromSelection);
+    
+    // 가이드 텍스트 업데이트
+    const battleGuideText = document.getElementById('battle-guide-text');
+    if (battleGuideText) {
+        battleGuideText.textContent = '전투할 상대를 선택하거나 랜덤 매칭을 이용하세요.';
+    }
+}
+
 function showMatchedOpponentScreen() {
     // 페이지 상단으로 스크롤
     window.scrollTo(0, 0);
@@ -3497,7 +3765,7 @@ function returnToBattleArena() {
 async function loadCharactersForArena() {
     if (!currentUser) return;
     
-    console.log('Loading characters for arena...');
+    console.log('🏟️ 아레나 캐릭터 로딩 (최적화)...');
     
     // DOM 요소 존재 확인
     if (!arenaCharactersGrid) {
@@ -3508,31 +3776,52 @@ async function loadCharactersForArena() {
     arenaCharactersGrid.innerHTML = '<p>캐릭터를 불러오는 중...</p>';
     
     try {
-        // 현재 사용자의 캐릭터들을 로드
-        const userQuery = query(collection(db, `users/${currentUser.uid}/characters`), orderBy('name', 'asc'));
-        const userSnapshot = await getDocs(userQuery);
-        
         const userCharacters = [];
-        userSnapshot.forEach((doc) => {
-            userCharacters.push({ id: doc.id, userId: currentUser.uid, ...doc.data() });
-        });
         
-        // 전체 캐릭터에서 현재 사용자가 만든 캐릭터 찾기
-        const allCharsQuery = query(collectionGroup(db, 'characters'));
-        const allCharsSnapshot = await getDocs(allCharsQuery);
+        // 1. 캐시에서 현재 사용자의 캐릭터들 먼저 찾기
+        if (allCharactersPool && allCharactersPool.length > 0) {
+            const cachedUserChars = allCharactersPool.filter(char => 
+                char.createdBy === currentUser.uid || char.userId === currentUser.uid
+            );
+            
+            console.log(`💾 캐시에서 ${cachedUserChars.length}개 캐릭터 발견`);
+            userCharacters.push(...cachedUserChars);
+        }
         
-        allCharsSnapshot.forEach((doc) => {
-            const charData = doc.data();
-            if (charData.createdBy === currentUser.uid) {
-                const existingChar = userCharacters.find(c => c.id === doc.id);
-                if (!existingChar) {
-                    // userId 필드 추가
-                    userCharacters.push({ id: doc.id, userId: currentUser.uid, ...charData });
+        // 2. 캐시에 데이터가 없거나 부족한 경우에만 Firebase에서 로드
+        if (userCharacters.length === 0) {
+            console.log('🔄 캐시에 데이터 없음, Firebase에서 로드...');
+            
+            // 현재 사용자의 캐릭터들을 로드
+            const userQuery = query(collection(db, `users/${currentUser.uid}/characters`), orderBy('name', 'asc'));
+            const userSnapshot = await getDocs(userQuery);
+            
+            userSnapshot.forEach((doc) => {
+                const charData = { id: doc.id, userId: currentUser.uid, ...doc.data() };
+                userCharacters.push(charData);
+                // 캐시에도 저장
+                setCachedCharacter(doc.id, charData);
+            });
+            
+            // 전체 캐릭터에서 현재 사용자가 만든 캐릭터 추가 확인
+            const allCharsQuery = query(collectionGroup(db, 'characters'));
+            const allCharsSnapshot = await getDocs(allCharsQuery);
+            
+            allCharsSnapshot.forEach((doc) => {
+                const charData = doc.data();
+                if (charData.createdBy === currentUser.uid) {
+                    const existingChar = userCharacters.find(c => c.id === doc.id);
+                    if (!existingChar) {
+                        const fullCharData = { id: doc.id, userId: currentUser.uid, ...charData };
+                        userCharacters.push(fullCharData);
+                        // 캐시에도 저장
+                        setCachedCharacter(doc.id, fullCharData);
+                    }
                 }
-            }
-        });
+            });
+        }
         
-        console.log(`Found ${userCharacters.length} characters for arena`);
+        console.log(`✅ 총 ${userCharacters.length}개 아레나 캐릭터 로드 완료`);
         
         if (userCharacters.length === 0) {
             arenaCharactersGrid.innerHTML = '<p>전투할 캐릭터가 없습니다. 먼저 캐릭터를 생성해주세요.</p>';
@@ -4300,33 +4589,45 @@ async function updateWinsLosses(winnerId, loserId) {
     }
 }
 
+// 캐릭터 참조 캐시
+let characterRefCache = new Map();
+
 async function findCharacterRef(characterId) {
     try {
-        console.log('findCharacterRef 호출됨, characterId:', characterId);
+        console.log('🔍 findCharacterRef 호출됨 (최적화), characterId:', characterId);
         console.log('현재 사용자 ID:', currentUser?.uid);
         
-        // 실시간 리스너의 캐시된 데이터에서 먼저 찾기 (Firebase 읽기 절약)
+        // 참조 캐시에서 먼저 확인
+        if (characterRefCache.has(characterId)) {
+            const cachedRef = characterRefCache.get(characterId);
+            console.log('💾 참조 캐시에서 찾음:', cachedRef.path);
+            return cachedRef;
+        }
+        
+        // 실시간 리스너의 캐시된 데이터에서 찾기 (Firebase 읽기 절약)
         if (allCharactersPool && allCharactersPool.length > 0) {
             const cachedCharacter = allCharactersPool.find(char => char.id === characterId);
             if (cachedCharacter && cachedCharacter.userId) {
                 const charRef = doc(db, `users/${cachedCharacter.userId}/characters`, characterId);
-                console.log('캐시된 데이터에서 찾음:', charRef.path);
+                characterRefCache.set(characterId, charRef); // 참조 캐시에 저장
+                console.log('✅ 실시간 풀에서 찾음 및 참조 캐시 저장:', charRef.path);
                 return charRef;
             }
         }
         
-        // 캐시에 없으면 현재 사용자의 캐릭터에서 찾기
+        // 캐시에 없으면 현재 사용자의 캐릭터에서 찾기 (최후 수단)
         if (currentUser?.uid) {
             const userCharRef = doc(db, `users/${currentUser.uid}/characters`, characterId);
             const userCharDoc = await getDoc(userCharRef);
             
             if (userCharDoc.exists()) {
-                console.log('현재 사용자의 캐릭터에서 찾음:', userCharRef.path);
+                characterRefCache.set(characterId, userCharRef); // 참조 캐시에 저장
+                console.log('🔄 Firebase에서 찾음 및 참조 캐시 저장:', userCharRef.path);
                 return userCharRef;
             }
         }
         
-        console.log('캐릭터를 찾을 수 없음:', characterId);
+        console.log('❌ 캐릭터를 찾을 수 없음:', characterId);
         return null;
     } catch (error) {
         console.error('Error finding character reference:', error);
@@ -5021,14 +5322,18 @@ novelLogModal.querySelector('.close-btn').addEventListener('click', () => {
 });
 generateBattleImageBtn.addEventListener('click', generateBattleImage);
 
-// --- RANKING SYSTEM ---
+// --- RANKING SYSTEM (페이지네이션 최적화) ---
+let currentRankingPage = 1;
+const RANKING_ITEMS_PER_PAGE = 10;
+
 function loadRanking() {
     rankingList.innerHTML = '<p>랭킹을 불러오는 중...</p>';
     
     try {
         // 실시간 랭킹 데이터 사용 (Firebase 읽기 없음)
-        console.log(`실시간 랭킹 데이터 사용: ${rankingData.length}개 캐릭터`);
-        displayRankingData(rankingData);
+        console.log(`📊 실시간 랭킹 데이터 사용: ${rankingData.length}개 캐릭터`);
+        currentRankingPage = 1; // 페이지 초기화
+        displayRankingDataWithPagination(rankingData);
         
     } catch (error) {
         console.error('Error loading ranking:', error);
@@ -5036,17 +5341,43 @@ function loadRanking() {
     }
 }
 
-// 랭킹 타이머 제거됨 - 실시간 데이터 사용으로 불필요
-
-// 랭킹 데이터를 화면에 표시하는 함수
-function displayRankingData(top10) {
-    if (top10.length === 0) {
+// 페이지네이션이 적용된 랭킹 데이터 표시 함수
+function displayRankingDataWithPagination(allRankingData) {
+    if (allRankingData.length === 0) {
         rankingList.innerHTML = '<p>아직 배틀 기록이 없습니다.</p>';
         return;
     }
     
+    const totalPages = Math.ceil(allRankingData.length / RANKING_ITEMS_PER_PAGE);
+    const startIndex = (currentRankingPage - 1) * RANKING_ITEMS_PER_PAGE;
+    const endIndex = startIndex + RANKING_ITEMS_PER_PAGE;
+    const pageData = allRankingData.slice(startIndex, endIndex);
+    
+    console.log(`📄 랭킹 페이지 ${currentRankingPage}/${totalPages} (${pageData.length}개 항목)`);
+    
     rankingList.innerHTML = '';
-    top10.forEach((character, index) => {
+    
+    // 페이지네이션 컨트롤 추가
+    const paginationContainer = document.createElement('div');
+    paginationContainer.className = 'ranking-pagination';
+    paginationContainer.innerHTML = `
+        <div class="pagination-info">
+            <span>페이지 ${currentRankingPage} / ${totalPages} (총 ${allRankingData.length}개 캐릭터)</span>
+        </div>
+        <div class="pagination-controls">
+            <button id="ranking-prev-btn" ${currentRankingPage === 1 ? 'disabled' : ''}>◀ 이전</button>
+            <span class="page-numbers">
+                ${generatePageNumbers(currentRankingPage, totalPages)}
+            </span>
+            <button id="ranking-next-btn" ${currentRankingPage === totalPages ? 'disabled' : ''}>다음 ▶</button>
+        </div>
+    `;
+    
+    rankingList.appendChild(paginationContainer);
+    
+    // 랭킹 아이템들 표시
+    pageData.forEach((character, index) => {
+        const globalRank = startIndex + index + 1;
         const rankingItem = document.createElement('div');
         rankingItem.className = 'ranking-item';
         
@@ -5054,7 +5385,7 @@ function displayRankingData(top10) {
         const imageUrl = character.imageUrl || 'https://placehold.co/60x60/333/FFF?text=?';
         
         rankingItem.innerHTML = `
-            <div class="ranking-rank">#${index + 1}</div>
+            <div class="ranking-rank">#${globalRank}</div>
             <img src="${imageUrl}" alt="${character.name}" class="ranking-character-image" onerror="this.src='https://placehold.co/60x60/333/FFF?text=?'">
             <div class="ranking-info">
                 <div class="ranking-name">${character.name}</div>
@@ -5064,11 +5395,69 @@ function displayRankingData(top10) {
         `;
         
         rankingItem.onclick = () => showRankingCharacterDetails(character);
-         rankingList.appendChild(rankingItem);
-     });
-     
-     // 실시간 데이터 사용으로 타이머 불필요
- }
+        rankingList.appendChild(rankingItem);
+    });
+    
+    // 페이지네이션 이벤트 리스너 추가
+    const prevBtn = document.getElementById('ranking-prev-btn');
+    const nextBtn = document.getElementById('ranking-next-btn');
+    
+    if (prevBtn) {
+        prevBtn.onclick = () => {
+            if (currentRankingPage > 1) {
+                currentRankingPage--;
+                displayRankingDataWithPagination(allRankingData);
+            }
+        };
+    }
+    
+    if (nextBtn) {
+        nextBtn.onclick = () => {
+            if (currentRankingPage < totalPages) {
+                currentRankingPage++;
+                displayRankingDataWithPagination(allRankingData);
+            }
+        };
+    }
+    
+    // 페이지 번호 클릭 이벤트
+    const pageNumberBtns = rankingList.querySelectorAll('.page-number-btn');
+    pageNumberBtns.forEach(btn => {
+        btn.onclick = () => {
+            const pageNum = parseInt(btn.dataset.page);
+            if (pageNum !== currentRankingPage) {
+                currentRankingPage = pageNum;
+                displayRankingDataWithPagination(allRankingData);
+            }
+        };
+    });
+}
+
+// 페이지 번호 생성 함수
+function generatePageNumbers(currentPage, totalPages) {
+    let pageNumbers = '';
+    const maxVisiblePages = 5;
+    
+    let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+    let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+    
+    // 끝 페이지가 조정되면 시작 페이지도 다시 조정
+    if (endPage - startPage + 1 < maxVisiblePages) {
+        startPage = Math.max(1, endPage - maxVisiblePages + 1);
+    }
+    
+    for (let i = startPage; i <= endPage; i++) {
+        const isActive = i === currentPage ? 'active' : '';
+        pageNumbers += `<button class="page-number-btn ${isActive}" data-page="${i}">${i}</button>`;
+    }
+    
+    return pageNumbers;
+}
+
+// 기존 displayRankingData 함수는 호환성을 위해 유지
+function displayRankingData(top10) {
+    displayRankingDataWithPagination(top10);
+}
 
 function showRankingCharacterDetails(character) {
     try {
