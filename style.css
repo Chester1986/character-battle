@@ -858,6 +858,44 @@ header nav {
     background: linear-gradient(135deg, rgba(30, 30, 46, 0.5) 0%, rgba(22, 33, 62, 0.5) 100%);
 }
 
+/* 지정매칭 모달 스타일 */
+.designated-match-description {
+    text-align: center;
+    color: var(--text-secondary);
+    margin-bottom: 20px;
+    font-size: 0.95em;
+}
+
+#designated-match-list {
+    max-height: 60vh;
+    overflow-y: auto;
+    padding: 10px 0;
+}
+
+/* 지정매칭 모달에서 랭킹 아이템 스타일 재사용 */
+#designated-match-list .ranking-item {
+    display: flex;
+    align-items: center;
+    padding: 15px;
+    border-bottom: 1px solid #34495e;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, rgba(30, 30, 46, 0.5) 0%, rgba(22, 33, 62, 0.5) 100%);
+}
+
+#designated-match-list .ranking-item:hover {
+    background: linear-gradient(135deg, rgba(74, 158, 255, 0.1) 0%, rgba(74, 158, 255, 0.05) 100%);
+    border-color: var(--accent-color);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(74, 158, 255, 0.2);
+}
+
+#designated-match-list .ranking-item:last-child {
+    border-bottom: none;
+}
+
 #ranking-list .ranking-item:hover {
     background: linear-gradient(135deg, rgba(74, 158, 255, 0.1) 0%, rgba(74, 158, 255, 0.05) 100%);
     border-color: var(--accent-color);
@@ -2604,6 +2642,17 @@ footer {
     background: linear-gradient(45deg, #ee5a52, #dc3545);
     transform: translateY(-2px);
     box-shadow: 0 5px 15px rgba(255, 107, 107, 0.4);
+}
+
+.designated-match-btn {
+    background: linear-gradient(45deg, #4a9eff, #3b7dd8);
+    color: white;
+}
+
+.designated-match-btn:hover {
+    background: linear-gradient(45deg, #3b7dd8, #2a5aa0);
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(74, 158, 255, 0.4);
 }
 
 .delete-btn {

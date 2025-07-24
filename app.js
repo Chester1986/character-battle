@@ -384,7 +384,7 @@ function initializeRealTimeListeners() {
         
         // 랭킹 모달이 열려있다면 UI 업데이트
         if (!rankingModal.classList.contains('hidden')) {
-            displayRanking();
+            displayRankingData(rankingData);
         }
     }, (error) => {
         console.error('전체 캐릭터 리스너 오류:', error);
@@ -1494,6 +1494,9 @@ async function showCharacterDetail(character) {
                 <button class="action-btn battle-btn" onclick="startBattleFromDetail('${latestCharacter.id}')">
                     ⚔️ 전투 시작
                 </button>
+                <button class="action-btn designated-match-btn" onclick="showDesignatedMatchModal('${latestCharacter.id}')">
+                    🎯 지정매칭
+                </button>
                 <button class="action-btn delete-btn" onclick="deleteCharacterFromDetail('${latestCharacter.id}', '${latestCharacter.name}')">
                     🗑️ 삭제
                 </button>
@@ -1675,6 +1678,77 @@ function showMatchingScreen() {
             console.log(`체크박스 ${index} 이벤트 리스너 추가:`, checkbox);
             checkbox.addEventListener('change', handleMatchingSkillSelection);
         });
+        
+        // 스킬 선택 아이템 전체에 클릭 이벤트 리스너 추가 (모바일 드래그 방지 포함)
+        const skillItems = document.querySelectorAll('.skill-selection-item');
+        skillItems.forEach((item, index) => {
+            console.log(`스킬 아이템 ${index} 클릭 이벤트 리스너 추가:`, item);
+            
+            let touchStartTime = 0;
+            let touchStartX = 0;
+            let touchStartY = 0;
+            let isDragging = false;
+            
+            // 터치 시작 이벤트
+            item.addEventListener('touchstart', function(event) {
+                touchStartTime = Date.now();
+                const touch = event.touches[0];
+                touchStartX = touch.clientX;
+                touchStartY = touch.clientY;
+                isDragging = false;
+            }, { passive: true });
+            
+            // 터치 이동 이벤트
+            item.addEventListener('touchmove', function(event) {
+                const touch = event.touches[0];
+                const deltaX = Math.abs(touch.clientX - touchStartX);
+                const deltaY = Math.abs(touch.clientY - touchStartY);
+                
+                // 10px 이상 이동하면 드래그로 간주
+                if (deltaX > 10 || deltaY > 10) {
+                    isDragging = true;
+                }
+            }, { passive: true });
+            
+            // 터치 종료 이벤트
+            item.addEventListener('touchend', function(event) {
+                const touchDuration = Date.now() - touchStartTime;
+                
+                // 드래그가 아니고, 터치 시간이 500ms 미만인 경우만 클릭으로 처리
+                if (!isDragging && touchDuration < 500) {
+                    event.preventDefault(); // 기본 클릭 이벤트 방지
+                    handleSkillItemClick(event, item);
+                }
+            });
+            
+            // 일반 클릭 이벤트 (데스크톱용)
+            item.addEventListener('click', function(event) {
+                // 터치 이벤트가 있는 경우 클릭 이벤트 무시
+                if (event.type === 'click' && 'ontouchstart' in window) {
+                    return;
+                }
+                handleSkillItemClick(event, item);
+            });
+        });
+        
+        // 스킬 아이템 클릭 처리 함수
+        function handleSkillItemClick(event, item) {
+            // 체크박스나 라벨을 직접 클릭한 경우는 중복 처리 방지
+            if (event.target.classList.contains('skill-checkbox') || 
+                event.target.classList.contains('skill-checkbox-label') ||
+                event.target.classList.contains('checkbox-custom')) {
+                return;
+            }
+            
+            // 해당 아이템 내의 체크박스 찾기
+            const checkbox = item.querySelector('.skill-checkbox');
+            if (checkbox) {
+                // 체크박스 상태 토글
+                checkbox.checked = !checkbox.checked;
+                // change 이벤트 발생시켜서 기존 핸들러 호출
+                checkbox.dispatchEvent(new Event('change'));
+            }
+        }
         
         // 초기 상태에서 updateSelectedSkillsDisplay 호출
         updateSelectedSkillsDisplay();
@@ -7628,8 +7702,216 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
         initializeLunaDisplay();
         initializeLunaManagement();
+        initializeDesignatedMatchModal();
     });
 } else {
     initializeLunaDisplay();
     initializeLunaManagement();
+    initializeDesignatedMatchModal();
 }
+
+// ===== 지정매칭 기능 =====
+
+// 지정매칭 모달 표시
+function showDesignatedMatchModal(characterId) {
+    console.log('지정매칭 모달 표시, characterId:', characterId);
+    
+    // 현재 캐릭터 정보 저장
+    window.currentDesignatedMatchCharacterId = characterId;
+    
+    // 모달 표시
+    const modal = document.getElementById('designated-match-modal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        modal.style.display = 'block';
+        loadDesignatedMatchTargets(characterId);
+    } else {
+        console.error('지정매칭 모달을 찾을 수 없습니다.');
+    }
+}
+
+// 지정매칭 대상 로드
+function loadDesignatedMatchTargets(characterId) {
+    console.log('지정매칭 대상 로드 중, characterId:', characterId);
+    
+    // 현재 캐릭터 찾기
+    const currentCharacter = allCharactersPool.find(c => c.id === characterId);
+    if (!currentCharacter) {
+        console.error('현재 캐릭터를 찾을 수 없습니다:', characterId);
+        return;
+    }
+    
+    // 랭킹 데이터 사용 (이미 정렬된 상태)
+    const availableTargets = rankingData.filter(character => {
+        // 자신 제외
+        if (character.id === characterId) return false;
+        // 같은 사용자의 캐릭터 제외
+        if (character.userId === currentUser.uid) return false;
+        return true;
+    });
+    
+    console.log('지정매칭 가능한 대상 수:', availableTargets.length);
+    
+    const listContainer = document.getElementById('designated-match-list');
+    if (!listContainer) {
+        console.error('지정매칭 리스트 컨테이너를 찾을 수 없습니다.');
+        return;
+    }
+    
+    if (availableTargets.length === 0) {
+        listContainer.innerHTML = '<div class="no-targets">지정매칭 가능한 캐릭터가 없습니다.</div>';
+        return;
+    }
+    
+    // 대상 리스트 생성 (랭킹 모달과 동일한 형식)
+    listContainer.innerHTML = availableTargets.map((character, index) => {
+        const rank = index + 1;
+        // 랭킹 모달과 동일한 승률 계산 방식 사용
+        const winRate = character.winRate || 0;
+        
+        // 캐릭터 이미지 URL 처리 (랭킹 모달과 동일한 크기)
+        const imageUrl = character.imageUrl || character.image_url || 'https://placehold.co/60x60/333/FFF?text=?';
+        
+        return `
+            <div class="ranking-item" onclick="selectDesignatedOpponent('${character.id}')">
+                <div class="ranking-rank">#${rank}</div>
+                <img src="${imageUrl}" alt="${character.name}" class="ranking-character-image" onerror="this.src='https://placehold.co/60x60/333/FFF?text=?'">
+                <div class="ranking-info">
+                    <div class="ranking-name">${character.name}</div>
+                    <div class="ranking-class">${character.character_class || character.class}</div>
+                </div>
+                <div class="ranking-stats">${winRate}%<br>(<span class="wins">${character.wins}승</span> <span class="losses">${character.losses}패</span>)</div>
+            </div>
+        `;
+    }).join('');
+}
+
+// 지정매칭 상대 선택
+async function selectDesignatedOpponent(opponentId) {
+    console.log('지정매칭 상대 선택:', opponentId);
+    
+    const currentCharacterId = window.currentDesignatedMatchCharacterId;
+    if (!currentCharacterId) {
+        console.error('현재 캐릭터 ID가 설정되지 않았습니다.');
+        return;
+    }
+    
+    // 현재 캐릭터와 상대방 캐릭터 찾기
+    const currentCharacter = allCharactersPool.find(c => c.id === currentCharacterId);
+    const opponentCharacter = allCharactersPool.find(c => c.id === opponentId);
+    
+    if (!currentCharacter || !opponentCharacter) {
+        console.error('캐릭터를 찾을 수 없습니다:', { currentCharacterId, opponentId });
+        alert('캐릭터 정보를 찾을 수 없습니다.');
+        return;
+    }
+    
+    try {
+        // 플레이어 캐릭터의 최신 데이터 가져오기
+        console.log('플레이어 캐릭터 최신 데이터 가져오는 중:', currentCharacter.name);
+        let cachedPlayer = getCachedCharacter(currentCharacter.id);
+        
+        if (cachedPlayer) {
+            console.log('캐시에서 플레이어 데이터 사용:', cachedPlayer.name);
+            playerCharacterForBattle = cachedPlayer;
+        } else {
+            console.log('Firebase에서 플레이어 데이터 가져오는 중');
+            const playerRef = await findCharacterRef(currentCharacter.id);
+            if (playerRef) {
+                const playerDoc = await getDoc(playerRef);
+                if (playerDoc.exists()) {
+                    const latestPlayerData = { id: playerDoc.id, ...playerDoc.data() };
+                    setCachedCharacter(currentCharacter.id, latestPlayerData);
+                    playerCharacterForBattle = latestPlayerData;
+                    console.log('Firebase에서 플레이어 데이터 로드:', latestPlayerData.name);
+                } else {
+                    playerCharacterForBattle = currentCharacter;
+                }
+            } else {
+                playerCharacterForBattle = currentCharacter;
+            }
+        }
+        
+        // 상대방 캐릭터의 최신 데이터 가져오기
+        console.log('상대방 캐릭터 최신 데이터 가져오는 중:', opponentCharacter.name);
+        let cachedOpponent = getCachedCharacter(opponentCharacter.id);
+        
+        if (cachedOpponent) {
+            console.log('캐시에서 상대방 데이터 사용:', cachedOpponent.name);
+            opponentCharacterForBattle = cachedOpponent;
+        } else {
+            console.log('Firebase에서 상대방 데이터 가져오는 중');
+            const opponentRef = await findCharacterRef(opponentCharacter.id);
+            if (opponentRef) {
+                const opponentDoc = await getDoc(opponentRef);
+                if (opponentDoc.exists()) {
+                    const latestOpponentData = { id: opponentDoc.id, ...opponentDoc.data() };
+                    setCachedCharacter(opponentCharacter.id, latestOpponentData);
+                    opponentCharacterForBattle = latestOpponentData;
+                    console.log('Firebase에서 상대방 데이터 로드:', latestOpponentData.name);
+                } else {
+                    opponentCharacterForBattle = opponentCharacter;
+                }
+            } else {
+                opponentCharacterForBattle = opponentCharacter;
+            }
+        }
+        
+        console.log('지정매칭 설정 완료:', {
+            player: playerCharacterForBattle.name,
+            opponent: opponentCharacterForBattle.name
+        });
+        
+        // 모달 닫기
+        const modal = document.getElementById('designated-match-modal');
+        if (modal) {
+            modal.style.display = 'none';
+            modal.classList.add('hidden');
+        }
+        
+        // 매칭 화면으로 이동
+        showView('matching');
+        showMatchingScreen();
+        window.scrollTo(0, 0);
+        
+    } catch (error) {
+        console.error('지정매칭 설정 중 오류:', error);
+        alert('지정매칭 설정 중 오류가 발생했습니다.');
+    }
+}
+
+// 지정매칭 모달 닫기
+function closeDesignatedMatchModal() {
+    const modal = document.getElementById('designated-match-modal');
+    if (modal) {
+        modal.style.display = 'none';
+        modal.classList.add('hidden');
+    }
+    window.currentDesignatedMatchCharacterId = null;
+}
+
+// 지정매칭 모달 초기화
+function initializeDesignatedMatchModal() {
+    const modal = document.getElementById('designated-match-modal');
+    if (!modal) return;
+    
+    // 닫기 버튼 이벤트 리스너
+    const closeBtn = modal.querySelector('.close-btn');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', closeDesignatedMatchModal);
+    }
+    
+    // 모달 배경 클릭 시 닫기
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            closeDesignatedMatchModal();
+        }
+    });
+}
+
+// 전역 함수로 등록
+window.showDesignatedMatchModal = showDesignatedMatchModal;
+window.loadDesignatedMatchTargets = loadDesignatedMatchTargets;
+window.selectDesignatedOpponent = selectDesignatedOpponent;
+window.closeDesignatedMatchModal = closeDesignatedMatchModal;
+window.initializeDesignatedMatchModal = initializeDesignatedMatchModal;
