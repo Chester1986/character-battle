@@ -585,6 +585,28 @@ header nav {
     margin-top: 4px;
 }
 
+/* 승패 색상 (전역 적용) */
+.wins {
+    color: #2ed573;
+    font-weight: 600;
+}
+
+.losses {
+    color: #ff6b6b;
+    font-weight: 600;
+}
+
+/* 캐릭터 카드 승패 색상 (하위 호환성) */
+.character-card .record .wins {
+    color: #2ed573;
+    font-weight: 600;
+}
+
+.character-card .record .losses {
+    color: #ff6b6b;
+    font-weight: 600;
+}
+
 .character-card-buttons {
     display: grid;
     grid-template-columns: 1fr 1fr;

@@ -977,7 +977,7 @@ function createMainCharacterCard(character) {
             <p class="character-class">${character.class || '클래스 정보 없음'}</p>
             <div class="character-stats">
                 <span class="win-rate">${winRate}%</span>
-                <span class="record">${wins}승 ${losses}패</span>
+                <span class="record"><span class="wins">${wins}승</span> <span class="losses">${losses}패</span></span>
             </div>
         </div>
     `;
@@ -1005,7 +1005,7 @@ function createCharacterCard(character, type) {
         <p class="character-class">${character.class || '클래스 정보 없음'}</p>
         <p class="character-personality"><strong>성격:</strong> ${character.personality || '정보 없음'}</p>
         <p class="character-story">${character.story || '스토리 정보 없음'}</p>
-        <p class="character-record">전적: ${character.wins || 0}승 / ${character.losses || 0}패</p>
+        <p class="character-record">전적: <span class="wins">${character.wins || 0}승</span> / <span class="losses">${character.losses || 0}패</span></p>
     `;
 
     const buttonWrapper = document.createElement('div');
@@ -2048,11 +2048,11 @@ async function showOpponentModal(character, battles) {
                 <div class="opponent-stats-grid">
                     <div class="opponent-stat-card">
                         <div class="opponent-stat-label">승리</div>
-                        <div class="opponent-stat-value">${latestCharacter.wins || 0}</div>
+                        <div class="opponent-stat-value"><span class="wins">${latestCharacter.wins || 0}</span></div>
                     </div>
                     <div class="opponent-stat-card">
                         <div class="opponent-stat-label">패배</div>
-                        <div class="opponent-stat-value">${latestCharacter.losses || 0}</div>
+                        <div class="opponent-stat-value"><span class="losses">${latestCharacter.losses || 0}</span></div>
                     </div>
                     <div class="opponent-stat-card">
                         <div class="opponent-stat-label">승률</div>
@@ -2566,7 +2566,7 @@ function displayOpponentsWithPagination() {
             <div class="opponent-card-info">
                 <h4>${opponent.name}</h4>
                 <p class="opponent-card-class">${opponent.class}</p>
-                <p class="opponent-card-stats">승률: ${winRate}% (${opponent.wins || 0}승 ${opponent.losses || 0}패)</p>
+                <p class="opponent-card-stats">승률: ${winRate}% (<span class="wins">${opponent.wins || 0}승</span> <span class="losses">${opponent.losses || 0}패</span>)</p>
             </div>
         `;
         
@@ -5391,7 +5391,7 @@ function displayRankingDataWithPagination(allRankingData) {
                 <div class="ranking-name">${character.name}</div>
                 <div class="ranking-class">${character.class}</div>
             </div>
-            <div class="ranking-stats">${character.winRate}%<br>(${character.wins}승 ${character.losses}패)</div>
+            <div class="ranking-stats">${character.winRate}%<br>(<span class="wins">${character.wins}승</span> <span class="losses">${character.losses}패</span>)</div>
         `;
         
         rankingItem.onclick = () => showRankingCharacterDetails(character);
@@ -5528,7 +5528,7 @@ function showRankingCharacterDetails(character) {
                             </div>
                             <div class="record-item">
                                 <span class="record-label">전적:</span>
-                                <span class="record-value">${character.wins}승 ${character.losses}패</span>
+                                <span class="record-value"><span class="wins">${character.wins}승</span> <span class="losses">${character.losses}패</span></span>
                             </div>
                             <div class="record-item">
                                 <span class="record-label">총 경기:</span>
