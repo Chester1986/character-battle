@@ -413,8 +413,8 @@ function initializeUserCharactersListener(userId) {
         
         console.log(`✅ 사용자 캐릭터 풀 업데이트: ${userCharactersPool.length}개`);
         
-        // 캐릭터 카드 섹션이 표시되어 있다면 UI 업데이트
-        if (!characterCardsSection.classList.contains('hidden')) {
+        // 앱 콘텐츠가 표시되어 있다면 UI 업데이트 (캐릭터 생성 후 즉시 반영)
+        if (!appContent.classList.contains('hidden')) {
             displayUserCharacters(userCharactersPool);
         }
     }, (error) => {
@@ -763,7 +763,7 @@ generateCharacterBtn.addEventListener('click', async () => {
         parsedData.imageUrl = imageUrl;
         updateProgress(90, '영웅의 초상화 완성!');
 
-        // 3. Save to database
+        // 3. Save character data to Firebase
         parsedData.wins = 0;
         parsedData.losses = 0;
         parsedData.owner = currentUser.uid;
@@ -775,13 +775,24 @@ generateCharacterBtn.addEventListener('click', async () => {
         // 강화된 프롬프트도 저장 (이미지 재생성에 활용)
         const conceptKeywords = getConceptKeywords(charConcept);
         parsedData.enhanced_prompt = `${parsedData.image_prompt}, ${conceptKeywords}, fantasy character portrait, ${parsedData.class || 'fantasy character'}, high quality, detailed, digital art, concept art style, professional illustration, centered composition, dramatic lighting, vibrant colors, masterpiece quality, full body or portrait view`;
-        await addDoc(collection(db, `users/${currentUser.uid}/characters`), parsedData);
-        updateProgress(100, `${parsedData.name} 탄생 완료!`);
         
-        alert(`${parsedData.name} 캐릭터가 생성되었습니다!`);
-        document.getElementById('character-creation-form').reset();
+        // Firebase에 캐릭터 저장
+        await saveCharacter(parsedData);
+        updateProgress(100, `${parsedData.name} 생성 완료!`);
+        
+        // 폼 리셋 및 화면 전환
+        document.getElementById('char-concept').value = '';
+        document.getElementById('char-name').value = '';
         showView('character-cards');
-        // 실시간 리스너가 자동으로 UI를 업데이트하므로 추가 작업 불필요
+        
+        // UI 강제 업데이트 (실시간 리스너와 동기화)
+        setTimeout(() => {
+            if (userCharactersPool.length > 0) {
+                displayUserCharacters(userCharactersPool);
+            }
+        }, 500);
+        
+        console.log(`${parsedData.name} 캐릭터 생성 및 저장 완료`);
 
     } catch (error) {
         console.error("캐릭터 생성 전체 과정 오류:", error);
@@ -863,6 +874,57 @@ function getConceptKeywords(characterConcept) {
     }
     
     return conceptKeywords;
+}
+
+// 캐릭터 미리보기 표시 함수
+function displayCharacterPreview(characterData) {
+    const characterPreview = document.getElementById('character-preview');
+    const charImagePreview = document.getElementById('char-image-preview');
+    const charStoryPreview = document.getElementById('char-story-preview');
+    const charStatsPreview = document.getElementById('char-stats-preview');
+    
+    if (!characterPreview || !charImagePreview || !charStoryPreview || !charStatsPreview) {
+        console.error('미리보기 요소를 찾을 수 없습니다.');
+        return;
+    }
+    
+    // 이미지 표시
+    charImagePreview.src = characterData.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image';
+    charImagePreview.classList.remove('hidden');
+    
+    // 스토리 표시
+    charStoryPreview.innerHTML = `
+        <p><strong>이름:</strong> ${characterData.name}</p>
+        <p><strong>클래스:</strong> ${characterData.class}</p>
+        <p><strong>성격:</strong> ${characterData.personality}</p>
+        <p><strong>배경 이야기:</strong> ${characterData.story}</p>
+        ${characterData.origin_story ? `<p><strong>탄생 스토리:</strong> ${characterData.origin_story}</p>` : ''}
+    `;
+    
+    // 스킬 표시
+    let skillsHtml = '<div class="skills-section">';
+    
+    if (characterData.attack_skills && characterData.attack_skills.length > 0) {
+        skillsHtml += '<h5>공격 스킬</h5>';
+        characterData.attack_skills.forEach(skill => {
+            skillsHtml += `<div class="skill-item"><strong>${skill.name}:</strong> ${skill.description}</div>`;
+        });
+    }
+    
+    if (characterData.defense_skills && characterData.defense_skills.length > 0) {
+        skillsHtml += '<h5>방어 스킬</h5>';
+        characterData.defense_skills.forEach(skill => {
+            skillsHtml += `<div class="skill-item"><strong>${skill.name}:</strong> ${skill.description}</div>`;
+        });
+    }
+    
+    skillsHtml += '</div>';
+    charStatsPreview.innerHTML = skillsHtml;
+    
+    // 미리보기 섹션 표시
+    characterPreview.classList.remove('hidden');
+    
+    console.log('캐릭터 미리보기 표시 완료:', characterData.name);
 }
 
 // ...
@@ -5017,7 +5079,11 @@ async function generateAndShowNovelLog() {
     console.log('Generating novel with complete battle data:', window.lastBattleData);
     const { player, opponent, playerSkills, opponentSkills, battleTurns, winner } = window.lastBattleData;
 
-    // 사용된 스킬 이름들 추출
+    // 사용된 스킬 이름과 설명 추출
+    const playerSkillDetails = playerSkills.map(skill => `${skill.name || skill.skill_name}: ${skill.description}`).join('\n');
+    const opponentSkillDetails = opponentSkills.map(skill => `${skill.name || skill.skill_name}: ${skill.description}`).join('\n');
+    
+    // 스킬 이름만 추출 (기존 로직 유지)
     const playerSkillNames = playerSkills.map(skill => skill.name || skill.skill_name).join(', ');
     const opponentSkillNames = opponentSkills.map(skill => skill.name || skill.skill_name).join(', ');
 
@@ -5032,12 +5098,14 @@ async function generateAndShowNovelLog() {
         **모든 서술, 묘사, 대화는 반드시 한국어로 작성해주세요. 스킬 이름과 캐릭터 이름만 원래 언어를 유지할 수 있습니다.**
 
         - 캐릭터 1 (플레이어): ${player.name} (${player.class})
-          - 사용한 스킬: ${playerSkillNames}
+          - 사용한 스킬:
+${playerSkillDetails}
           - 성격: ${player.personality}
           - 배경 스토리: ${player.story || '알려지지 않은 과거'}
           - 기원 스토리: ${player.origin_story || '신비로운 기원'}
         - 캐릭터 2 (상대방): ${opponent.name} (${opponent.class})
-          - 사용한 스킬: ${opponentSkillNames}
+          - 사용한 스킬:
+${opponentSkillDetails}
           - 성격: ${opponent.personality}
           - 배경 스토리: ${opponent.story || '알려지지 않은 과거'}
           - 기원 스토리: ${opponent.origin_story || '신비로운 기원'}
@@ -5049,7 +5117,7 @@ async function generateAndShowNovelLog() {
         2. 그들의 배경이 서로 간의 긴장감이나 연결을 어떻게 만드는지 보여주기
         3. 그들의 철학과 동기를 드러내는 대화 포함
         4. 개인적 역사를 바탕으로 한 승리/패배에 대한 반응 묘사
-        5. 전투 중 사용되는 특정 스킬 이름들(${playerSkillNames}, ${opponentSkillNames})을 반드시 언급
+        5. 전투 중 사용되는 특정 스킬들과 그 효과를 반드시 언급하고, 스킬의 특성이 전투 전개에 미치는 영향을 묘사
         
         단순히 사건을 나열하지 말고, 그들의 이야기를 의미 있는 내러티브로 엮어주세요.
     `;
@@ -6911,8 +6979,11 @@ window.expandCharacterSlot = async function() {
         
         alert(`슬롯 확장 완료! 새로운 슬롯 수: ${currentMaxSlots + 1}개`);
         
-        // UI 새로고침
-        loadUserCharacters(true);
+        // UI 새로고침 - 실시간 리스너가 자동으로 업데이트하므로 별도 호출 불필요
+        // 하지만 즉시 반영을 위해 현재 캐릭터 목록을 다시 표시
+        if (!characterCardsSection.classList.contains('hidden')) {
+            displayUserCharacters(userCharactersPool);
+        }
         
         console.log('=== 캐릭터 슬롯 확장 완료 ===');
         
@@ -7926,6 +7997,8 @@ if (document.readyState === 'loading') {
         initializeLunaDisplay();
         initializeLunaManagement();
         initializeDesignatedMatchModal();
+        
+
     });
 } else {
     initializeLunaDisplay();
