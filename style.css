@@ -1701,28 +1701,74 @@ footer p {
 .battle-complete-message {
     text-align: center;
     padding: 2rem;
-    background: linear-gradient(135deg, rgba(46, 213, 115, 0.1) 0%, rgba(74, 158, 255, 0.1) 100%);
     border-radius: 16px;
-    border: 2px solid var(--success-color);
     margin-top: 1rem;
 }
 
-.battle-complete-message h4 {
-    color: var(--success-color);
-    font-size: 1.5em;
-    margin-bottom: 1rem;
-    text-shadow: 0 0 10px rgba(46, 213, 115, 0.3);
+/* 승리 시 파란색 계열 */
+.battle-complete-message-win {
+    background: linear-gradient(135deg, rgba(74, 158, 255, 0.2) 0%, rgba(74, 158, 255, 0.3) 100%) !important;
+    border: 2px solid var(--accent-color) !important;
+    text-align: center;
+    padding: 2rem;
+    border-radius: 16px;
+    margin-top: 1rem;
+    box-shadow: 0 0 20px rgba(74, 158, 255, 0.4) !important;
 }
 
-.battle-complete-message p {
-    color: var(--text-color);
+.battle-complete-message-win h4 {
+    color: var(--accent-color) !important;
+    font-size: 1.5em;
+    margin-bottom: 1rem;
+    text-shadow: 0 0 10px rgba(74, 158, 255, 0.5) !important;
+}
+
+.battle-complete-message-win p {
+    color: var(--text-color) !important;
     font-size: 1.1em;
     margin: 0.5rem 0;
 }
 
-.battle-complete-message strong {
-    color: var(--accent-color);
-    text-shadow: 0 0 5px rgba(74, 158, 255, 0.3);
+.battle-complete-message-win strong {
+    color: var(--accent-color) !important;
+    text-shadow: 0 0 5px rgba(74, 158, 255, 0.5) !important;
+}
+
+/* 패배 시 빨간색 계열 */
+.battle-complete-message-lose {
+    background: linear-gradient(135deg, rgba(255, 71, 87, 0.2) 0%, rgba(255, 71, 87, 0.3) 100%) !important;
+    border: 2px solid var(--danger-color) !important;
+    text-align: center;
+    padding: 2rem;
+    border-radius: 16px;
+    margin-top: 1rem;
+    box-shadow: 0 0 20px rgba(255, 71, 87, 0.4) !important;
+}
+
+.battle-complete-message-lose h4 {
+    color: var(--danger-color) !important;
+    font-size: 1.5em;
+    margin-bottom: 1rem;
+    text-shadow: 0 0 10px rgba(255, 71, 87, 0.5) !important;
+}
+
+.battle-complete-message-lose p {
+    color: var(--text-color) !important;
+    font-size: 1.1em;
+    margin: 0.5rem 0;
+}
+
+.battle-complete-message-lose strong {
+    color: var(--danger-color) !important;
+    text-shadow: 0 0 5px rgba(255, 71, 87, 0.5) !important;
+}
+
+/* 기본 스타일 제거 - 승리/패배별 스타일만 사용 */
+.battle-complete-message {
+    text-align: center;
+    padding: 2rem;
+    border-radius: 16px;
+    margin-top: 1rem;
 }
 
 /* 반응형 디자인 - 모바일 및 태블릿 대응 */
@@ -4249,7 +4295,7 @@ footer {
     margin: 0;
 }
 
-.battle-complete-message, .battle-complete-status {
+.battle-complete-status {
     text-align: center;
     padding: 15px;
     background: rgba(78, 205, 196, 0.2);
@@ -4257,13 +4303,13 @@ footer {
     border: 1px solid #4ecdc4;
 }
 
-.battle-complete-message h4, .battle-complete-status h4 {
+.battle-complete-status h4 {
     color: #4ecdc4;
     margin-bottom: 10px;
     font-size: 1.5em;
 }
 
-.battle-complete-message p, .battle-complete-status p {
+.battle-complete-status p {
     color: var(--text-color);
     margin: 5px 0;
 }
@@ -4620,37 +4666,7 @@ footer {
     margin-top: auto;
 }
 
-/* 전투 완료 메시지 스타일 */
-.battle-complete-message {
-    background: linear-gradient(135deg, rgba(46, 213, 115, 0.15) 0%, rgba(39, 174, 96, 0.1) 100%);
-    border: 2px solid rgba(46, 213, 115, 0.4);
-    border-radius: 20px;
-    padding: 32px;
-    text-align: center;
-    margin: 24px 0;
-    box-shadow: 0 12px 35px rgba(46, 213, 115, 0.3);
-    backdrop-filter: blur(10px);
-}
-
-.battle-complete-message h4 {
-    color: var(--success-color);
-    font-size: 1.6em;
-    margin-bottom: 16px;
-    text-shadow: 0 0 15px rgba(46, 213, 115, 0.5);
-    font-weight: 700;
-}
-
-.battle-complete-message p {
-    color: var(--text-color);
-    margin: 12px 0;
-    font-size: 1.2em;
-    line-height: 1.5;
-}
-
-.battle-complete-message p strong {
-    color: var(--accent-color);
-    text-shadow: 0 0 8px rgba(74, 158, 255, 0.4);
-}
+/* 전투 완료 메시지 기본 스타일 제거 - 승리/패배별 스타일만 사용 */
 
 /* 최종 결과 메시지 스타일 */
 .final-result {
@@ -6269,4 +6285,128 @@ footer {
     .random-opponent-btn, .back-to-arena-btn {
         width: 100%;
     }
+}
+
+/* 전투 스토리 버튼 컨테이너 스타일 */
+.battle-story-buttons {
+    display: flex;
+    gap: 15px;
+    justify-content: center;
+    margin-top: 20px;
+    flex-wrap: wrap;
+    padding: 0 20px;
+}
+
+.battle-story-buttons .btn {
+    min-width: 150px;
+    padding: 12px 20px;
+    font-size: 16px;
+    font-weight: 600;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+#next-battle-btn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+}
+
+#next-battle-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+    background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+}
+
+.battle-story-buttons #back-to-arena-btn {
+    background: linear-gradient(135deg, #6c757d 0%, #495057 100%);
+    color: white;
+    box-shadow: 0 4px 15px rgba(108, 117, 125, 0.4);
+}
+
+.battle-story-buttons #back-to-arena-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(108, 117, 125, 0.6);
+    background: linear-gradient(135deg, #495057 0%, #6c757d 100%);
+}
+
+/* 반응형 디자인 */
+@media (max-width: 768px) {
+    .battle-story-buttons {
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+    }
+    
+    .battle-story-buttons .btn {
+        width: 100%;
+        max-width: 280px;
+    }
+}
+
+/* 슬롯 확장 버튼 스타일 */
+.expand-slot-btn {
+    background: linear-gradient(135deg, #4CAF50, #45a049);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 0.9em;
+    font-weight: bold;
+    cursor: pointer;
+    margin-top: 10px;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 4px rgba(76, 175, 80, 0.3);
+}
+
+.expand-slot-btn:hover {
+    background: linear-gradient(135deg, #45a049, #4CAF50);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(76, 175, 80, 0.4);
+}
+
+.expand-slot-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 4px rgba(76, 175, 80, 0.3);
+}
+
+/* 관리자 슬롯 관리 버튼 스타일 */
+.slot-action-controls {
+    margin-top: 15px;
+    padding-top: 15px;
+    border-top: 1px solid #444;
+}
+
+.slot-btn {
+    background: linear-gradient(135deg, #4CAF50, #45a049);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    margin: 0 5px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: all 0.3s ease;
+}
+
+.slot-btn:hover {
+    background: linear-gradient(135deg, #45a049, #4CAF50);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+}
+
+.slot-btn.subtract {
+    background: linear-gradient(135deg, #f44336, #d32f2f);
+}
+
+.slot-btn.subtract:hover {
+    background: linear-gradient(135deg, #d32f2f, #f44336);
+    box-shadow: 0 4px 12px rgba(244, 67, 54, 0.3);
 }

@@ -5,6 +5,7 @@ require('dotenv').config();
 // Hugging Face 토큰 설정
 const HF_TOKEN_PRIMARY = process.env.HF_TOKEN;
 const HF_TOKEN_FALLBACK = process.env.HF_FALLBACK_TOKEN || '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';
+const HF_TOKEN_FALLBACK2 = process.env.HF_FALLBACK_TOKEN2 || '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';
 
 const app = express();
 
@@ -133,7 +134,55 @@ app.post('/api/generate-image', async (req, res) => {
         console.log(`❌ Hugging Face Fallback ERROR: ${error.message}`);
     }
 
-    // 3단계: 모든 토큰 실패 시 플레이스홀더
+    // 3단계: Hugging Face 두 번째 풀백 토큰 시도
+    console.log(`\n--- Attempting Hugging Face (Second Fallback Token) ---`);
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), hfModel.timeout);
+
+        const response = await fetch(hfModel.url, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${HF_TOKEN_FALLBACK2}`,
+                'Content-Type': 'application/json',
+                'x-wait-for-model': 'true'
+            },
+            body: JSON.stringify({
+                inputs: prompt
+            }),
+            signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        console.log(`HF Second Fallback Response status: ${response.status}`);
+
+        if (response.ok) {
+            const imageBuffer = await response.arrayBuffer();
+            
+            if (imageBuffer.byteLength > 1000) {
+                const base64Image = Buffer.from(imageBuffer).toString('base64');
+                
+                console.log(`✅ SUCCESS with Hugging Face (Second Fallback Token)`);
+                console.log(`Generated image size: ${imageBuffer.byteLength} bytes`);
+                
+                return res.json({
+                    success: true,
+                    imageUrl: `data:image/png;base64,${base64Image}`,
+                    model: hfModel.name,
+                    source: 'fallback2'
+                });
+            }
+        } else {
+            const errorText = await response.text();
+            console.log(`❌ Hugging Face Second Fallback FAILED: HTTP ${response.status}`);
+            console.log(`Error response: ${errorText}`);
+        }
+    } catch (error) {
+        console.log(`❌ Hugging Face Second Fallback ERROR: ${error.message}`);
+    }
+
+    // 4단계: 모든 토큰 실패 시 플레이스홀더
     console.log(`\n🔄 All Hugging Face tokens failed, returning placeholder image`);
     
     const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
@@ -148,7 +197,7 @@ app.post('/api/generate-image', async (req, res) => {
             Temporarily Unavailable
         </text>
         <text x="50%" y="70%" font-family="Arial, sans-serif" font-size="12" fill="white" text-anchor="middle" dominant-baseline="middle">
-            All Hugging Face tokens failed
+            All 3 Hugging Face tokens failed
         </text>
         <text x="50%" y="80%" font-family="Arial, sans-serif" font-size="12" fill="white" text-anchor="middle" dominant-baseline="middle">
             Using placeholder image
@@ -162,7 +211,7 @@ app.post('/api/generate-image', async (req, res) => {
         imageUrl: `data:image/svg+xml;base64,${placeholderBase64}`,
         model: 'Placeholder',
         source: 'placeholder',
-        message: 'Both Hugging Face tokens are temporarily unavailable. Using placeholder image.'
+        message: 'All 3 Hugging Face tokens are temporarily unavailable. Using placeholder image.'
     });
 });
 
@@ -176,9 +225,11 @@ if (require.main === module) {
         console.log(`🎮 Game URL: http://localhost:${PORT}`);
         console.log(`🤗 Hugging Face Primary: ${HF_TOKEN_PRIMARY ? 'Configured ✅' : 'Missing ❌'}`);
         console.log(`🤗 Hugging Face Fallback: ${HF_TOKEN_FALLBACK ? 'Configured ✅' : 'Missing ❌'}`);
+        console.log(`🤗 Hugging Face Fallback2: ${HF_TOKEN_FALLBACK2 ? 'Configured ✅' : 'Missing ❌'}`);
         console.log(`\n=== API Status ===`);
         console.log(`Primary: Hugging Face Token 1`);
         console.log(`Fallback: Hugging Face Token 2`);
+        console.log(`Fallback2: Hugging Face Token 3`);
         console.log(`==================\n`);
     });
 }

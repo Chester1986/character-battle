@@ -485,10 +485,7 @@ function showView(view) {
     } else if (view === 'character-cards') {
         appContent.classList.remove('hidden');
         characterCardsSection.classList.remove('hidden');
-        // 캐릭터 카드 뷰가 표시될 때 자동으로 사용자 캐릭터 로드
-        if (currentUser) {
-            loadUserCharacters();
-        }
+        // 실시간 리스너가 이미 데이터를 관리하므로 별도 로드 불필요
     } else if (view === 'character-creation') {
         appContent.classList.remove('hidden');
         characterCreationSection.classList.remove('hidden');
@@ -583,6 +580,7 @@ signupBtn.addEventListener('click', async () => {
             userId: id,
             email: email,
             luna: 0, // 초기 루나 없음
+            maxCharacterSlots: 4, // 기본 캐릭터 슬롯 수
             createdAt: new Date().toISOString()
         });
         
@@ -637,13 +635,17 @@ generateCharacterBtn.addEventListener('click', async () => {
         return;
     }
     
-    // 캐릭터 개수 제한 확인 (4개까지)
+    // 캐릭터 개수 제한 확인
     try {
         const userQuery = query(collection(db, `users/${currentUser.uid}/characters`));
         const userSnapshot = await getDocs(userQuery);
         
-        if (userSnapshot.size >= 4) {
-            alert('캐릭터는 최대 4개까지만 생성할 수 있습니다.');
+        // 사용자의 최대 슬롯 수 확인
+        const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+        const maxSlots = userDoc.exists() ? (userDoc.data().maxCharacterSlots || 4) : 4;
+        
+        if (userSnapshot.size >= maxSlots) {
+            alert(`캐릭터는 최대 ${maxSlots}개까지만 생성할 수 있습니다. 슬롯을 확장하려면 50루나가 필요합니다.`);
             return;
         }
     } catch (error) {
@@ -676,8 +678,8 @@ generateCharacterBtn.addEventListener('click', async () => {
         - 배경 이야기는 캐릭터의 탄생 배경과 상세 정보를 포함하여 3-4문장으로 작성하세요.
         - 성격은 핵심 특성 2-3가지로 요약하세요.
         - 스킬 설명은 각각 정확히 2문장으로 작성하되, 자연스럽고 적절한 길이로 작성하세요.
-        - 첫 번째 문장은 스킬 효과를 설명하고, 두 번째 문장은 '다만', '하지만', '그러나', '단' 등의 연결어를 사용하여 제약사항이나 부작용을 명확히 구분해서 작성하세요.
-        - 예시: "상대방의 약점이나 감정의 동요를 읽어내어 심리적인 압박을 가하거나, 혼란을 야기합니다. 다만, 순수한 마음을 가진 이에게는 효과가 미미합니다"
+        - 스킬의 효과와 특징을 명확하고 흥미롭게 설명해주세요.
+        - 예시: "상대방의 약점이나 감정의 동요를 읽어내어 심리적인 압박을 가하거나, 혼란을 야기하는 강력한 정신 공격 스킬입니다."
 
         
         결과는 반드시 다음 JSON 형식에 맞춰서 한글로 작성해주세요. image_prompt만 영어로 작성해주세요:
@@ -910,15 +912,28 @@ function loadUserCharacters(forceRefresh = false) {
 }
 
 // 사용자 캐릭터 표시 함수 분리
-function displayUserCharacters(userCharacters) {
+async function displayUserCharacters(userCharacters) {
     characterCardsGrid.innerHTML = '';
+    
+    // 사용자의 최대 슬롯 수 확인
+    let maxSlots = 4;
+    if (currentUser) {
+        try {
+            const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+            if (userDoc.exists()) {
+                maxSlots = userDoc.data().maxCharacterSlots || 4;
+            }
+        } catch (error) {
+            console.error('사용자 슬롯 정보 로드 오류:', error);
+        }
+    }
     
     // 캐릭터 생성 카드 추가
     const createCard = document.createElement('div');
     createCard.className = 'create-character-card';
     
-    // 캐릭터 개수가 4개에 도달했는지 확인
-    const isLimitReached = userCharacters.length >= 4;
+    // 캐릭터 개수가 최대 슬롯에 도달했는지 확인
+    const isLimitReached = userCharacters.length >= maxSlots;
     
     if (isLimitReached) {
         createCard.classList.add('disabled');
@@ -927,7 +942,10 @@ function displayUserCharacters(userCharacters) {
                 <div class="create-icon disabled">✕</div>
                 <h3>생성 제한 도달</h3>
                 <p>캐릭터 생성 한도에 도달했습니다</p>
-                <p class="create-limit">(4개/4개)</p>
+                <p class="create-limit">(${userCharacters.length}/${maxSlots}개)</p>
+                <button class="expand-slot-btn" onclick="expandCharacterSlot()">
+                    🌙 슬롯 확장 (50루나)
+                </button>
             </div>
         `;
     } else {
@@ -936,7 +954,7 @@ function displayUserCharacters(userCharacters) {
                 <div class="create-icon">+</div>
                 <h3>새로운 영웅 생성</h3>
                 <p>새로운 모험을 시작하세요</p>
-                <p class="create-limit">(${userCharacters.length}/4개)</p>
+                <p class="create-limit">(${userCharacters.length}/${maxSlots}개)</p>
             </div>
         `;
         createCard.addEventListener('click', () => {
@@ -4406,8 +4424,9 @@ async function startTurnBasedBattleNew() {
         }
         
         if (dynamicMessageElement) {
+            const messageClass = isPlayerWin ? 'battle-complete-message battle-complete-message-win' : 'battle-complete-message battle-complete-message-lose';
             dynamicMessageElement.innerHTML = `
-                <div class="battle-complete-message">
+                <div class="${messageClass}">
                     <h4>🎉 전투 완료!</h4>
                     <p>최종 승자: <strong>${isPlayerWin ? battleData.player.name : battleData.opponent.name}</strong></p>
                     <p>스토리가 생성되었습니다.</p>
@@ -5105,6 +5124,50 @@ async function generateAndShowNovelLog() {
             
             console.log('Battle image generation button and container added to story section');
             
+            // 버튼 컨테이너 생성
+            const buttonContainer = document.createElement('div');
+            buttonContainer.className = 'battle-story-buttons';
+            buttonContainer.style.cssText = 'display: flex; gap: 15px; justify-content: center; margin-top: 20px; flex-wrap: wrap;';
+            
+            // 다음전투 버튼 추가 (매칭 화면으로 이동)
+            const nextBattleBtn = document.createElement('button');
+            nextBattleBtn.id = 'next-battle-btn';
+            nextBattleBtn.className = 'btn btn-primary';
+            nextBattleBtn.innerHTML = '⚔️ 다음전투';
+            nextBattleBtn.addEventListener('click', async () => {
+                console.log('다음전투 버튼 클릭됨 - 매칭 화면으로 이동');
+                
+                // 스토리 컨테이너 제거
+                storyContainer.remove();
+                
+                // 게이지 바 컨테이너 숨기기
+                const gaugeContainer = document.getElementById('new-battle-gauge-container');
+                if (gaugeContainer) {
+                    gaugeContainer.classList.add('hidden');
+                }
+                
+                // 매칭된 상대방 화면 제거 (있다면)
+                const matchedScreen = document.getElementById('matched-opponent-screen');
+                if (matchedScreen) {
+                    matchedScreen.remove();
+                }
+                
+                // 전투 관련 전역 변수들 초기화 (일부만)
+                selectedSkills = [];
+                opponentCharacterForBattle = null;
+                // playerCharacterForBattle은 유지 (같은 캐릭터로 다음 전투)
+                
+                console.log('매칭 화면으로 이동 중...');
+                
+                // 매칭 화면으로 이동
+                if (playerCharacterForBattle) {
+                    startBattleFromDetail(playerCharacterForBattle.id);
+                } else {
+                    // 플레이어 캐릭터가 없으면 캐릭터 선택 화면으로
+                    showView('character-cards');
+                }
+            });
+            
             // 아레나로 돌아가기 버튼 추가
             const backToArenaBtn = document.createElement('button');
             backToArenaBtn.id = 'back-to-arena-btn';
@@ -5115,8 +5178,6 @@ async function generateAndShowNovelLog() {
                 
                 // 스토리 컨테이너 제거
                 storyContainer.remove();
-                
-                // 전투 로그 레이어 제거됨
                 
                 // 게이지 바 컨테이너 숨기기
                 const gaugeContainer = document.getElementById('new-battle-gauge-container');
@@ -5144,7 +5205,11 @@ async function generateAndShowNovelLog() {
                 // 로그인 후 첫 화면(캐릭터 카드 화면)으로 이동
                 showView('character-cards');
             });
-            storyContainer.appendChild(backToArenaBtn);
+            
+            // 버튼들을 컨테이너에 추가
+            buttonContainer.appendChild(nextBattleBtn);
+            buttonContainer.appendChild(backToArenaBtn);
+            storyContainer.appendChild(buttonContainer);
             
             // battle-section에 스토리 컨테이너 추가
             battleSection.appendChild(storyContainer);
@@ -5293,8 +5358,10 @@ async function startTurnBasedBattle(player, opponent) {
         gaugeStatusText.textContent = '전투 완료!';
         
         // 승리자와 함께 완료 메시지 표시 (소설과 동시에 나타남)
+        const isPlayerWin = winner.name === player.name;
+        const messageClass = isPlayerWin ? 'battle-complete-message battle-complete-message-win' : 'battle-complete-message battle-complete-message-lose';
         dynamicMessageElement.innerHTML = `
-            <div class="battle-complete-message">
+            <div class="${messageClass}">
                 <h4>🎉 전투 완료!</h4>
                 <p><strong>승리자: ${winner.name}</strong></p>
                 <p>스토리가 생성되었습니다.</p>
@@ -6795,6 +6862,66 @@ async function spendLuna(amount) {
     return false;
 }
 
+// 캐릭터 슬롯 확장 함수
+window.expandCharacterSlot = async function() {
+    console.log('=== 캐릭터 슬롯 확장 시작 ===');
+    
+    if (!currentUser) {
+        alert('로그인이 필요합니다.');
+        return;
+    }
+    
+    const SLOT_EXPANSION_COST = 50;
+    
+    try {
+        // 현재 사용자 정보 확인
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        const userDoc = await getDoc(userDocRef);
+        
+        if (!userDoc.exists()) {
+            alert('사용자 정보를 찾을 수 없습니다.');
+            return;
+        }
+        
+        const userData = userDoc.data();
+        const currentLuna = userData.luna || 0;
+        const currentMaxSlots = userData.maxCharacterSlots || 4;
+        
+        // 루나 부족 확인
+        if (currentLuna < SLOT_EXPANSION_COST) {
+            alert(`루나가 부족합니다. 필요: ${SLOT_EXPANSION_COST} 루나, 보유: ${currentLuna} 루나`);
+            return;
+        }
+        
+        // 확인 다이얼로그
+        const confirmMessage = `${SLOT_EXPANSION_COST}루나를 소모하여 캐릭터 슬롯을 1개 확장하시겠습니까?\n현재 슬롯: ${currentMaxSlots}개 → ${currentMaxSlots + 1}개`;
+        if (!confirm(confirmMessage)) {
+            return;
+        }
+        
+        // 루나 차감 및 슬롯 확장
+        await updateDoc(userDocRef, {
+            luna: currentLuna - SLOT_EXPANSION_COST,
+            maxCharacterSlots: currentMaxSlots + 1
+        });
+        
+        // 로컬 상태 업데이트
+        userLuna = currentLuna - SLOT_EXPANSION_COST;
+        updateLunaDisplay();
+        
+        alert(`슬롯 확장 완료! 새로운 슬롯 수: ${currentMaxSlots + 1}개`);
+        
+        // UI 새로고침
+        loadUserCharacters(true);
+        
+        console.log('=== 캐릭터 슬롯 확장 완료 ===');
+        
+    } catch (error) {
+        console.error('슬롯 확장 오류:', error);
+        alert('슬롯 확장 중 오류가 발생했습니다.');
+    }
+};
+
 // 스킬 업그레이드 함수
 async function upgradeSkill(characterId, skillType, skillIndex) {
     console.log('🔧 [DEBUG] upgradeSkill 시작:', { characterId, skillType, skillIndex });
@@ -7088,7 +7215,7 @@ async function generateUpgradedSkill(originalSkill, characterData) {
 
 3. 설명은 정확히 2문장으로 작성하되, 기존 스킬 설명과 비슷한 길이를 유지하세요
 
-4. 첫 번째 문장은 진화된 강력한 효과를 설명하고, 두 번째 문장은 '다만', '하지만', '그러나', '단' 등의 연결어를 사용하여 제약사항이나 부작용을 명확히 구분해서 작성하세요
+4. 진화된 강력한 효과를 명확하고 흥미롭게 설명해주세요
 
 5. 기존 스킬의 핵심 컨셉은 반드시 유지하되, 선택한 진화 방향에 따라 독창적이고 다양한 발전 양상을 보여주세요
 
@@ -7101,7 +7228,7 @@ async function generateUpgradedSkill(originalSkill, characterData) {
 다음 JSON 형식으로만 응답해주세요:
 {
   "name": "업그레이드된 스킬 이름 (창의적이고 진화 방향을 반영한 이름)",
-  "description": "업그레이드된 스킬 설명 (2문장, 자연스러운 길이, 제약사항에 연결어 사용)"
+  "description": "업그레이드된 스킬 설명 (자연스러운 길이, 강력한 효과 중심)"
 }`;
     
     console.log('🔧 [DEBUG] AI 프롬프트 생성 완료, generateWithFallback 호출');
@@ -7155,13 +7282,13 @@ ${((skillType === 'attack' ? characterData.attackSkills : characterData.defenseS
 2. 기존 스킬들과 중복되지 않는 독특한 스킬을 만들어주세요
 3. 스킬 이름과 설명은 창의적이고 흥미롭게 작성해주세요
 4. 설명은 정확히 2문장으로 작성하되, 자연스럽고 적절한 길이로 작성하세요
-5. 첫 번째 문장은 스킬 효과를 설명하고, 두 번째 문장은 '다만', '하지만', '그러나', '단' 등의 연결어를 사용하여 제약사항을 명확히 구분해서 작성하세요
-6. 예시: "상대방의 약점이나 감정의 동요를 읽어내어 심리적인 압박을 가하거나, 혼란을 야기합니다. 다만, 순수한 마음을 가진 이에게는 효과가 미미합니다"
+5. 스킬의 효과와 특징을 명확하고 흥미롭게 설명해주세요
+6. 예시: "상대방의 약점이나 감정의 동요를 읽어내어 심리적인 압박을 가하거나, 혼란을 야기하는 강력한 정신 공격 스킬입니다."
 
 다음 JSON 형식으로만 응답해주세요:
 {
   "name": "새 스킬 이름",
-  "description": "새 스킬 설명 (2문장, 자연스러운 길이, 제약사항에 연결어 사용)"
+  "description": "새 스킬 설명 (자연스러운 길이, 강력한 효과 중심)"
 }`;
     
     try {
@@ -7502,6 +7629,7 @@ function selectUser(user, element) {
     const displayId = user.originalUserId || user.userId;
     document.getElementById('selected-user-id').textContent = displayId;
     document.getElementById('selected-user-luna').textContent = user.luna;
+    document.getElementById('selected-user-slots').textContent = user.maxCharacterSlots || 4;
     
     // 루나 관리 패널 표시
     const lunaControls = document.getElementById('luna-management-controls');
@@ -7638,12 +7766,93 @@ async function subtractLunaFromSelectedUser() {
     }
 }
 
+// 선택된 사용자에게 슬롯 추가
+async function addSlotToSelectedUser() {
+    if (!window.selectedUser) {
+        alert('먼저 사용자를 선택해주세요.');
+        return;
+    }
+    
+    const amountInput = document.getElementById('slot-amount-input');
+    const amount = parseInt(amountInput.value);
+    
+    if (isNaN(amount) || amount <= 0) {
+        alert('올바른 슬롯 수량을 입력해주세요.');
+        return;
+    }
+    
+    try {
+        const userRef = doc(db, 'users', window.selectedUser.id);
+        const currentSlots = window.selectedUser.maxCharacterSlots || 4;
+        const newSlots = currentSlots + amount;
+        
+        await updateDoc(userRef, {
+            maxCharacterSlots: newSlots
+        });
+        
+        // UI 업데이트
+        window.selectedUser.maxCharacterSlots = newSlots;
+        document.getElementById('selected-user-slots').textContent = newSlots;
+        
+        const displayId = window.selectedUser.originalUserId || window.selectedUser.userId;
+        alert(`${displayId}에게 ${amount}개의 슬롯을 추가했습니다.`);
+        document.getElementById('slot-amount-input').value = '';
+    } catch (error) {
+        console.error('슬롯 추가 오류:', error);
+        alert('슬롯 추가 중 오류가 발생했습니다.');
+    }
+}
+
+// 선택된 사용자에게서 슬롯 감소
+async function subtractSlotFromSelectedUser() {
+    if (!window.selectedUser) {
+        alert('먼저 사용자를 선택해주세요.');
+        return;
+    }
+    
+    const amountInput = document.getElementById('slot-amount-input');
+    const amount = parseInt(amountInput.value);
+    
+    if (isNaN(amount) || amount <= 0) {
+        alert('올바른 슬롯 수량을 입력해주세요.');
+        return;
+    }
+    
+    const currentSlots = window.selectedUser.maxCharacterSlots || 4;
+    if (currentSlots - amount < 1) {
+        alert('최소 1개의 슬롯은 유지되어야 합니다.');
+        return;
+    }
+    
+    try {
+        const userRef = doc(db, 'users', window.selectedUser.id);
+        const newSlots = currentSlots - amount;
+        
+        await updateDoc(userRef, {
+            maxCharacterSlots: newSlots
+        });
+        
+        // UI 업데이트
+        window.selectedUser.maxCharacterSlots = newSlots;
+        document.getElementById('selected-user-slots').textContent = newSlots;
+        
+        const displayId = window.selectedUser.originalUserId || window.selectedUser.userId;
+        alert(`${displayId}에게서 ${amount}개의 슬롯을 감소했습니다.`);
+        document.getElementById('slot-amount-input').value = '';
+    } catch (error) {
+        console.error('슬롯 감소 오류:', error);
+        alert('슬롯 감소 중 오류가 발생했습니다.');
+    }
+}
+
 // 전역 함수로 등록
 window.searchUsers = searchUsers;
 window.displaySearchResults = displaySearchResults;
 window.selectUser = selectUser;
 window.addLunaToSelectedUser = addLunaToSelectedUser;
 window.subtractLunaFromSelectedUser = subtractLunaFromSelectedUser;
+window.addSlotToSelectedUser = addSlotToSelectedUser;
+window.subtractSlotFromSelectedUser = subtractSlotFromSelectedUser;
 
 // 루나 새로고침 함수
 async function refreshLunaDisplay() {
@@ -7677,6 +7886,8 @@ function initializeLunaManagement() {
     const addLunaBtn = document.getElementById('add-luna-btn');
     const subtractLunaBtn = document.getElementById('subtract-luna-btn');
     const refreshLunaBtn = document.getElementById('refresh-luna-btn');
+    const addSlotBtn = document.getElementById('add-slot-btn');
+    const subtractSlotBtn = document.getElementById('subtract-slot-btn');
     
     if (addLunaBtn) {
         // 기존 이벤트 리스너 제거 후 새로 등록
@@ -7694,6 +7905,18 @@ function initializeLunaManagement() {
         // 기존 이벤트 리스너 제거 후 새로 등록
         refreshLunaBtn.removeEventListener('click', refreshLunaDisplay);
         refreshLunaBtn.addEventListener('click', refreshLunaDisplay);
+    }
+    
+    if (addSlotBtn) {
+        // 기존 이벤트 리스너 제거 후 새로 등록
+        addSlotBtn.removeEventListener('click', addSlotToSelectedUser);
+        addSlotBtn.addEventListener('click', addSlotToSelectedUser);
+    }
+    
+    if (subtractSlotBtn) {
+        // 기존 이벤트 리스너 제거 후 새로 등록
+        subtractSlotBtn.removeEventListener('click', subtractSlotFromSelectedUser);
+        subtractSlotBtn.addEventListener('click', subtractSlotFromSelectedUser);
     }
 }
 
@@ -7764,8 +7987,9 @@ function loadDesignatedMatchTargets(characterId) {
     }
     
     // 대상 리스트 생성 (랭킹 모달과 동일한 형식)
-    listContainer.innerHTML = availableTargets.map((character, index) => {
-        const rank = index + 1;
+    listContainer.innerHTML = availableTargets.map((character) => {
+        // 실제 랭킹 순위 찾기 (rankingData에서의 위치 + 1)
+        const actualRank = rankingData.findIndex(c => c.id === character.id) + 1;
         // 랭킹 모달과 동일한 승률 계산 방식 사용
         const winRate = character.winRate || 0;
         
@@ -7774,7 +7998,7 @@ function loadDesignatedMatchTargets(characterId) {
         
         return `
             <div class="ranking-item" onclick="selectDesignatedOpponent('${character.id}')">
-                <div class="ranking-rank">#${rank}</div>
+                <div class="ranking-rank">#${actualRank}</div>
                 <img src="${imageUrl}" alt="${character.name}" class="ranking-character-image" onerror="this.src='https://placehold.co/60x60/333/FFF?text=?'">
                 <div class="ranking-info">
                     <div class="ranking-name">${character.name}</div>
