@@ -436,17 +436,25 @@ function updateRankingData() {
     });
     
     // 승률 기준으로 정렬 (승률이 같으면 총 전투 수로 정렬)
+    // 전투 기록이 있는 캐릭터를 우선 순위로 정렬하고 상위 10개만 유지
     rankingData = charactersWithStats
-        .filter(char => char.totalBattles > 0) // 전투 기록이 있는 캐릭터만
         .sort((a, b) => {
             const winRateA = parseFloat(a.winRate);
             const winRateB = parseFloat(b.winRate);
+            
+            // 전투 기록이 있는 캐릭터를 우선 순위로
+            if (a.totalBattles > 0 && b.totalBattles === 0) return -1;
+            if (a.totalBattles === 0 && b.totalBattles > 0) return 1;
+            
+            // 둘 다 전투 기록이 있거나 없는 경우 승률로 정렬
             if (winRateB !== winRateA) {
                 return winRateB - winRateA;
             }
             return b.totalBattles - a.totalBattles;
         })
-        .slice(0, 10); // 상위 10개만
+        .slice(0, 10); // 상위 10개만 유지
+    
+    console.log(`📊 랭킹 데이터 업데이트: ${rankingData.length}개 캐릭터`);
 }
 
 // 실시간 리스너 정리
@@ -5600,7 +5608,7 @@ function displayRankingDataWithPagination(allRankingData) {
                 <div class="ranking-name">${character.name}</div>
                 <div class="ranking-class">${character.class}</div>
             </div>
-            <div class="ranking-stats">${character.winRate}%<br>(<span class="wins">${character.wins}승</span> <span class="losses">${character.losses}패</span>)</div>
+            <div class="ranking-stats">${character.winRate}%<br>(<span class="wins">${character.wins || 0}승</span> <span class="losses">${character.losses || 0}패</span>)</div>
         `;
         
         rankingItem.onclick = () => showRankingCharacterDetails(character);
@@ -5737,7 +5745,7 @@ function showRankingCharacterDetails(character) {
                             </div>
                             <div class="record-item">
                                 <span class="record-label">전적:</span>
-                                <span class="record-value"><span class="wins">${character.wins}승</span> <span class="losses">${character.losses}패</span></span>
+                                <span class="record-value"><span class="wins">${character.wins || 0}승</span> <span class="losses">${character.losses || 0}패</span></span>
                             </div>
                             <div class="record-item">
                                 <span class="record-label">총 경기:</span>
@@ -8077,7 +8085,7 @@ function loadDesignatedMatchTargets(characterId) {
                     <div class="ranking-name">${character.name}</div>
                     <div class="ranking-class">${character.character_class || character.class}</div>
                 </div>
-                <div class="ranking-stats">${winRate}%<br>(<span class="wins">${character.wins}승</span> <span class="losses">${character.losses}패</span>)</div>
+                <div class="ranking-stats">${winRate}%<br>(<span class="wins">${character.wins || 0}승</span> <span class="losses">${character.losses || 0}패</span>)</div>
             </div>
         `;
     }).join('');
