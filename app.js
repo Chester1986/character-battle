@@ -241,12 +241,18 @@ function updateModelStatus(modelName, status = 'trying') {
 }
 
 async function generateWithFallback(prompt, maxRetriesPerModel = 2) {
+    console.log(`🔄 폴백 시스템 시작: ${modelFallbackOrder.length}개 모델 시도`);
+    console.log('📋 모델 순서:', modelFallbackOrder.map(m => `${m.name} (API키${m.apiKey})`));
+    
     for (let modelIndex = 0; modelIndex < modelFallbackOrder.length; modelIndex++) {
         const { name: modelName, model, apiKey } = modelFallbackOrder[modelIndex];
+        
+        console.log(`🔄 모델 ${modelIndex + 1}/${modelFallbackOrder.length}: ${modelName} (API키${apiKey}) 시도 중...`);
         
         // API 키 전환 시점 확인 및 메시지 표시
         if (modelIndex === 3) {
             updateProgress(null, '🔄 첫 번째 API 키 할당량 초과, 두 번째 API 키로 전환 중...');
+            console.log('🔄 두 번째 API 키로 전환');
             await new Promise(res => setTimeout(res, 1000)); // 사용자가 메시지를 볼 수 있도록 대기
         }
         
@@ -280,8 +286,10 @@ async function generateWithFallback(prompt, maxRetriesPerModel = 2) {
             } catch (error) {
                 console.warn(`❌ ${modelName} (API키${apiKey}) attempt ${attempt} failed:`, error.message);
                 
-                // 500 내부 서버 오류, 토큰 한도 초과나 특정 오류인 경우 즉시 다음 모델로
-                if (error.message.includes('500') ||
+                // 429 에러 (할당량 초과) 체크 추가
+                if (error.message.includes('429') ||
+                    error.message.includes('Too Many Requests') ||
+                    error.message.includes('500') ||
                     error.message.includes('Internal Server Error') ||
                     error.message.includes('internal error') ||
                     error.message.includes('quota') || 
@@ -302,9 +310,12 @@ async function generateWithFallback(prompt, maxRetriesPerModel = 2) {
                 }
             }
         }
+        
+        console.log(`❌ ${modelName} (API키${apiKey}) 완전 실패, 다음 모델로 이동`);
     }
     
     // 모든 모델이 실패한 경우
+    console.log('❌ 모든 폴백 모델과 API 키가 실패했습니다.');
     updateProgress(null, '❌ 모든 API 키와 모델이 실패했습니다. 잠시 후 다시 시도해주세요.');
     throw new Error('All fallback models and API keys failed. Please try again later.');
 }
@@ -487,6 +498,12 @@ function showView(view) {
     matchingSection.classList.add('hidden');
     battleSection.classList.add('hidden');
     adminSection.classList.add('hidden');
+    
+    // 스토리 섹션도 숨김
+    const storySection = document.getElementById('story-section');
+    if (storySection) {
+        storySection.classList.add('hidden');
+    }
 
     if (view === 'auth') {
         authSection.classList.remove('hidden');
@@ -509,6 +526,11 @@ function showView(view) {
     } else if (view === 'admin') {
         appContent.classList.remove('hidden');
         adminSection.classList.remove('hidden');
+    } else if (view === 'story') {
+        appContent.classList.remove('hidden');
+        if (storySection) {
+            storySection.classList.remove('hidden');
+        }
     }
 }
 
@@ -543,9 +565,18 @@ onAuthStateChanged(auth, async (user) => {
         showRankingBtn.classList.remove('hidden');
         adminBtn.classList.remove('hidden');
         
+        // Story 버튼 표시
+        const showStoryBtn = document.getElementById('show-story-btn');
+        if (showStoryBtn) {
+            showStoryBtn.classList.remove('hidden');
+        }
+        
         // 실시간 리스너 초기화
         initializeRealTimeListeners();
         initializeUserCharactersListener(user.uid);
+        
+        // 소설 시스템 초기화
+        initializeStorySystem();
         
         showView('character-cards');
         await loadUserLuna(); // 루나 잔액 로드
@@ -557,6 +588,12 @@ onAuthStateChanged(auth, async (user) => {
         logoutBtn.classList.add('hidden');
         showRankingBtn.classList.add('hidden');
         adminBtn.classList.add('hidden');
+        
+        // Story 버튼 숨김
+        const showStoryBtn = document.getElementById('show-story-btn');
+        if (showStoryBtn) {
+            showStoryBtn.classList.add('hidden');
+        }
         showView('auth');
         characterCardsGrid.innerHTML = '';
         resetBattleArena();
@@ -8220,3 +8257,1391 @@ window.loadDesignatedMatchTargets = loadDesignatedMatchTargets;
 window.selectDesignatedOpponent = selectDesignatedOpponent;
 window.closeDesignatedMatchModal = closeDesignatedMatchModal;
 window.initializeDesignatedMatchModal = initializeDesignatedMatchModal;
+
+// ===== 소설 시스템 ===== 
+
+// 소설 시스템 전역 변수
+let currentStoryPage = 1;
+let totalStoryPages = 1;
+let storyCache = new Map();
+let isGeneratingPage = false;
+
+// 소설 시스템 초기화
+function initializeStorySystem() {
+    console.log('소설 시스템 초기화 중...');
+    
+    // 스토리 버튼 이벤트 리스너
+    const showStoryBtn = document.getElementById('show-story-btn');
+    if (showStoryBtn) {
+        showStoryBtn.addEventListener('click', async () => {
+            showView('story');
+            // 총 페이지 수 업데이트
+            await updateTotalPages();
+            // 마지막 읽은 페이지 불러오기
+            const lastReadPage = getLastReadPage();
+            // 마지막 읽은 페이지가 총 페이지 수를 초과하지 않도록 확인
+            const targetPage = Math.min(lastReadPage, totalStoryPages);
+            // 마지막 읽은 페이지 로드
+            loadStoryPage(targetPage);
+        });
+    }
+    
+    // 첫 페이지 강제 재생성 함수 (개발용)
+    window.recreateFirstPage = async function() {
+        try {
+            console.log('첫 페이지 재생성 시작...');
+            
+            // 기존 첫 페이지 삭제
+            const pagesRef = collection(db, 'story_pages');
+            const q = query(pagesRef, where('pageNumber', '==', 1));
+            const querySnapshot = await getDocs(q);
+            
+            for (const doc of querySnapshot.docs) {
+                await deleteDoc(doc.ref);
+                console.log('기존 첫 페이지 삭제됨:', doc.id);
+            }
+            
+            // 캐시 클리어
+            storyCache.clear();
+            
+            // 새 첫 페이지 생성
+            await createDefaultFirstPage();
+            
+            console.log('첫 페이지 재생성 완료!');
+            alert('첫 페이지가 새로운 내용으로 업데이트되었습니다!');
+            
+        } catch (error) {
+            console.error('첫 페이지 재생성 실패:', error);
+            alert('첫 페이지 재생성 실패: ' + error.message);
+        }
+    };
+    
+    // 뒤로가기 버튼
+    const backBtn = document.getElementById('back-to-cards-from-story-btn');
+    if (backBtn) {
+        backBtn.addEventListener('click', () => {
+            showView('character-cards');
+        });
+    }
+    
+    // 네비게이션 버튼들
+    const firstPageBtn = document.getElementById('first-page-btn');
+    const prevPageBtn = document.getElementById('prev-page-btn');
+    const nextPageBtn = document.getElementById('next-page-btn');
+    const lastPageBtn = document.getElementById('last-page-btn');
+    const pageJumpBtn = document.getElementById('page-jump-btn');
+    const generatePageBtn = document.getElementById('generate-page-btn');
+    
+    if (firstPageBtn) firstPageBtn.addEventListener('click', () => loadStoryPage(1));
+    if (prevPageBtn) prevPageBtn.addEventListener('click', () => loadStoryPage(currentStoryPage - 1));
+    if (nextPageBtn) nextPageBtn.addEventListener('click', () => loadStoryPage(currentStoryPage + 1));
+    if (lastPageBtn) lastPageBtn.addEventListener('click', () => loadStoryPage(totalStoryPages));
+    if (generatePageBtn) generatePageBtn.addEventListener('click', showPageGenerationModal);
+    
+    if (pageJumpBtn) {
+        pageJumpBtn.addEventListener('click', () => {
+            const input = document.getElementById('page-jump-input');
+            const pageNum = parseInt(input.value);
+            if (pageNum >= 1 && pageNum <= totalStoryPages) {
+                loadStoryPage(pageNum);
+                input.value = '';
+            }
+        });
+    }
+    
+    // 페이지 액션 버튼들
+    const likeBtn = document.getElementById('like-page-btn');
+    const bookmarkBtn = document.getElementById('bookmark-page-btn');
+    const deleteBtn = document.getElementById('delete-page-btn');
+    
+    if (likeBtn) likeBtn.addEventListener('click', togglePageLike);
+    if (bookmarkBtn) bookmarkBtn.addEventListener('click', togglePageBookmark);
+    if (deleteBtn) deleteBtn.addEventListener('click', deleteLatestPage);
+    
+    // 페이지 생성 모달 초기화
+    initializePageGenerationModal();
+    
+    console.log('소설 시스템 초기화 완료');
+}
+
+// 스토리 페이지 로드
+// 마지막 읽은 페이지 저장
+function saveLastReadPage(pageNumber) {
+    try {
+        localStorage.setItem('lastReadPage', pageNumber.toString());
+    } catch (error) {
+        console.error('마지막 읽은 페이지 저장 오류:', error);
+    }
+}
+
+// 마지막 읽은 페이지 불러오기
+function getLastReadPage() {
+    try {
+        const lastPage = localStorage.getItem('lastReadPage');
+        return lastPage ? parseInt(lastPage) : 1;
+    } catch (error) {
+        console.error('마지막 읽은 페이지 불러오기 오류:', error);
+        return 1;
+    }
+}
+
+async function loadStoryPage(pageNumber) {
+    if (pageNumber < 1) return;
+    
+    console.log(`스토리 페이지 ${pageNumber} 로드 중...`);
+    
+    try {
+        // 총 페이지 수 업데이트
+        await updateTotalPages();
+        
+        if (pageNumber > totalStoryPages) {
+            console.log(`요청된 페이지 ${pageNumber}가 총 페이지 수 ${totalStoryPages}를 초과합니다.`);
+            return;
+        }
+        
+        currentStoryPage = pageNumber;
+        // 마지막 읽은 페이지를 localStorage에 저장
+        saveLastReadPage(pageNumber);
+        updateNavigationButtons();
+        
+        // 캐시에서 페이지 확인
+        if (storyCache.has(pageNumber)) {
+            displayStoryPage(storyCache.get(pageNumber));
+            return;
+        }
+        
+        // 로딩 표시
+        showStoryLoading();
+        
+        // 첫 페이지는 프로그램에서 직접 생성
+        if (pageNumber === 1) {
+            createDefaultFirstPage();
+        } else {
+            // 2페이지부터는 Firebase에서 페이지 데이터 가져오기
+            const pageData = await fetchStoryPageFromFirebase(pageNumber);
+            
+            if (pageData) {
+                storyCache.set(pageNumber, pageData);
+                displayStoryPage(pageData);
+            } else {
+                showStoryError('페이지를 찾을 수 없습니다.');
+            }
+        }
+        
+    } catch (error) {
+        console.error('스토리 페이지 로드 중 오류:', error);
+        showStoryError('페이지 로드 중 오류가 발생했습니다.');
+    }
+}
+
+// Firebase에서 스토리 페이지 가져오기
+async function fetchStoryPageFromFirebase(pageNumber) {
+    try {
+        const pagesRef = collection(db, 'story_pages');
+        const q = query(pagesRef, where('pageNumber', '==', pageNumber));
+        const querySnapshot = await getDocs(q);
+        
+        if (!querySnapshot.empty) {
+            const doc = querySnapshot.docs[0];
+            return { id: doc.id, ...doc.data() };
+        }
+        
+        return null;
+    } catch (error) {
+        console.error('Firebase에서 페이지 가져오기 오류:', error);
+        return null;
+    }
+}
+
+// 총 페이지 수 업데이트
+async function updateTotalPages() {
+    try {
+        const metadataRef = doc(db, 'story_metadata', 'main');
+        const metadataDoc = await getDoc(metadataRef);
+        
+        if (metadataDoc.exists()) {
+            totalStoryPages = metadataDoc.data().totalPages || 1;
+        } else {
+            totalStoryPages = 1;
+        }
+        
+        // UI 업데이트
+        const totalPagesElement = document.getElementById('total-pages-num');
+        if (totalPagesElement) {
+            totalPagesElement.textContent = totalStoryPages;
+        }
+        
+    } catch (error) {
+        console.error('총 페이지 수 업데이트 오류:', error);
+        totalStoryPages = 1;
+    }
+}
+
+// 기본 첫 페이지 생성 (Firebase 없이 로컬에서만)
+function createDefaultFirstPage() {
+    const defaultContent = `
+        <div style="text-align: center; margin-bottom: 40px; padding: 20px; background: linear-gradient(135deg, #0f0f23, #1a1a2e); border-radius: 20px; border: 3px solid #4a9eff; box-shadow: 0 0 30px rgba(74, 158, 255, 0.5);">
+            <h1 style="color: #4a9eff; margin: 0; font-size: 2.2em; text-shadow: 2px 2px 4px rgba(0,0,0,0.7);">🏆 전설의 아레나</h1>
+            <h2 style="color: #ffd700; margin: 10px 0 0 0; font-size: 1.3em; font-style: italic;">루나 에너지의 발견</h2>
+        </div>
+        
+        <div style="background: linear-gradient(135deg, #1a1a2e, #16213e); padding: 40px; border-radius: 20px; margin: 30px 0; border: 2px solid #4a9eff; box-shadow: 0 0 25px rgba(74, 158, 255, 0.3); line-height: 1.8;">
+            <h2 style="color: #ffd700; text-align: center; margin-bottom: 30px; font-size: 1.8em; text-shadow: 1px 1px 3px rgba(0,0,0,0.5);">📜 제1장: 차원의 균열과 레전드 아레나의 탄생</h2>
+            
+            <h3 style="color: #ff6b6b; margin: 35px 0 20px 0; font-size: 1.4em; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">⚡ 태초의 혼돈</h3>
+            <p style="margin: 20px 0; color: #e8f4fd; font-size: 1.1em; text-indent: 20px;">우주가 창조된 지 수십억 년이 흘렀을 때, 무수한 차원들 사이에 균열이 생기기 시작했다. 이 균열들은 단순한 공간의 틈이 아니었다. 각기 다른 법칙과 시간의 흐름을 가진 세계들이 서로 충돌하며 만들어낸, 현실과 환상이 뒤섞인 신비로운 공간이었다.</p>
+            
+            <p style="margin: 20px 0; color: #e8f4fd; font-size: 1.1em; text-indent: 20px;">고대 마법사들은 이 현상을 <strong style="color: #ffd700;">'차원 융합'</strong>이라 불렀고, 과학자들은 <strong style="color: #ffd700;">'시공간 특이점'</strong>이라 명명했다. 하지만 그 누구도 이 현상의 진정한 의미를 깨닫지 못했다. 이것은 우주 자체가 선택한 시험장이었던 것이다.</p>
+            
+            <h3 style="color: #ff6b6b; margin: 35px 0 20px 0; font-size: 1.4em; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">🌌 아레나의 형성</h3>
+            <p style="margin: 20px 0; color: #e8f4fd; font-size: 1.1em; text-indent: 20px;">차원 균열들이 하나로 수렴하면서, 거대한 원형의 공간이 형성되었다. 이 공간은 물리 법칙을 초월한 곳으로, 중력은 의지에 따라 변하고, 시간은 감정에 따라 빨라지거나 느려졌다. 하늘에는 수십 개의 태양과 달이 동시에 떠 있었고, 땅은 수정처럼 투명한 바닥 아래로 무한한 별들이 흐르는 모습을 보여주었다.</p>
+            
+            <p style="margin: 20px 0; color: #e8f4fd; font-size: 1.1em; text-indent: 20px;">이 공간의 중앙에는 거대한 원형 무대가 솟아올랐다. 무대의 표면은 살아있는 것처럼 맥박치며, 그 위에 서는 자의 마음을 읽어 최적의 전투 환경을 만들어냈다. 사막을 원하면 뜨거운 모래가 펼쳐지고, 숲을 원하면 고대의 나무들이 자라났다. 바다를 원하면 깊고 푸른 물결이 일렁였다.</p>
+            
+            <h3 style="color: #ff6b6b; margin: 35px 0 20px 0; font-size: 1.4em; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">🌙 루나 에너지의 발견</h3>
+            <p style="margin: 20px 0; color: #e8f4fd; font-size: 1.1em; text-indent: 20px;">아레나가 완성된 후, 그 중심부에서 신비로운 에너지가 발견되었다. 이 에너지는 달빛처럼 은은하게 빛나며, 만지는 자에게 무한한 가능성을 느끼게 했다. 고대의 현자들은 이를 <strong style="color: #87ceeb;">'루나(Luna)'</strong>라 명명했다.</p>
+            
+            <p style="margin: 20px 0; color: #e8f4fd; font-size: 1.1em; text-indent: 20px;">루나는 단순한 에너지가 아니었다. 그것은 의식을 가진 존재였으며, 순수한 의지와 용기를 가진 자들에게만 자신의 힘을 나누어주었다. 루나를 얻은 자들은 자신의 한계를 뛰어넘을 수 있었고, 새로운 능력을 개발하거나 기존의 힘을 강화할 수 있었다.</p>
+            
+            <h3 style="color: #ff6b6b; margin: 35px 0 20px 0; font-size: 1.4em; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">⚔️ 첫 번째 전사들의 등장</h3>
+            <p style="margin: 20px 0; color: #e8f4fd; font-size: 1.1em; text-indent: 20px;">차원 균열을 통해 다양한 세계에서 전사들이 아레나로 끌려오기 시작했다. 어떤 이는 자신의 의지로, 어떤 이는 운명에 이끌려, 또 어떤 이는 복수나 명예를 위해 이곳에 발을 들였다.</p>
+            
+            <div style="background: rgba(255, 215, 0, 0.1); padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 3px solid #ffd700;">
+                <p style="margin: 0; color: #ffd700; font-weight: bold;">🛡️ 강철의 성기사 아르투리우스</p>
+                <p style="margin: 5px 0 0 0; color: #e8f4fd; font-size: 0.9em;">멸망한 왕국의 마지막 기사로, 자신의 세계를 구하기 위한 힘을 찾아 헤매던 중 아레나에 도달했다.</p>
+            </div>
+            
+            <div style="background: rgba(128, 0, 128, 0.1); padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 3px solid #800080;">
+                <p style="margin: 0; color: #dda0dd; font-weight: bold;">🗡️ 그림자 암살자 카게</p>
+                <p style="margin: 5px 0 0 0; color: #e8f4fd; font-size: 0.9em;">어둠 속에서 태어나 그림자를 조종하는 신비로운 닌자. 잃어버린 기억을 되찾기 위해 아레나에 왔다.</p>
+            </div>
+            
+            <div style="background: rgba(255, 69, 0, 0.1); padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 3px solid #ff4500;">
+                <p style="margin: 0; color: #ff6347; font-weight: bold;">🔥 원소 마법사 엘레나</p>
+                <p style="margin: 5px 0 0 0; color: #e8f4fd; font-size: 0.9em;">불, 물, 바람, 땅의 모든 원소를 다루는 천재 마법사. 금지된 마법의 비밀을 찾고 있다.</p>
+            </div>
+            
+            <div style="background: rgba(34, 139, 34, 0.1); padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 3px solid #228b22;">
+                <p style="margin: 0; color: #90ee90; font-weight: bold;">🐻 야수 전사 그롬</p>
+                <p style="margin: 5px 0 0 0; color: #e8f4fd; font-size: 0.9em;">거대한 체구와 야수의 힘을 가진 전사. 자신의 부족을 구하기 위해 강력한 힘을 추구한다.</p>
+            </div>
+            
+            <h3 style="color: #ff6b6b; margin: 35px 0 20px 0; font-size: 1.4em; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">⚡ 전설의 첫 번째 전투</h3>
+            <p style="margin: 20px 0; color: #e8f4fd; font-size: 1.1em; text-indent: 20px;">아르투리우스와 카게 사이에 벌어진 첫 번째 전투는 아레나의 역사를 바꾸었다. 두 전사의 대결은 <strong style="color: #ffd700;">3일 3밤</strong>을 지속되었고, 그들의 의지와 기술이 충돌할 때마다 아레나 전체가 진동했다. 마침내 아르투리우스가 승리했을 때, 하늘에서 루나의 빛이 내려와 그를 축복했다.</p>
+            
+            <p style="margin: 20px 0; color: #e8f4fd; font-size: 1.1em; text-indent: 20px;">이 순간, 아레나는 깨달았다. 이곳은 단순한 전투장이 아니라, <strong style="color: #87ceeb;">영혼의 성장과 진화를 위한 신성한 공간</strong>이라는 것을. 승부의 결과보다 중요한 것은 전사들이 보여주는 용기, 명예, 그리고 성장하려는 의지였다.</p>
+        </div>
+        
+        <div style="background: linear-gradient(135deg, #1e3c72, #2a5298); padding: 25px; border-radius: 15px; margin: 30px 0; border: 2px solid #4a9eff; text-align: center;">
+            <h3 style="color: #ffd700; margin-bottom: 15px;">📖 아스트랄 코덱스의 예언</h3>
+            <div style="background: rgba(0, 0, 0, 0.3); padding: 20px; border-radius: 10px; border-left: 4px solid #4a9eff;">
+                <p style="font-style: italic; color: #e8f4fd; margin: 0; font-size: 1.1em; line-height: 1.6;">
+                    <em>"차원이 하나로 모이는 곳에서,<br>
+                    영혼의 진정한 힘이 시험받으리라.<br>
+                    승리하는 자는 루나의 축복을 받고,<br>
+                    패배하는 자는 더 강한 의지로 일어서리라.<br>
+                    이곳에서 벌어지는 모든 전투는<br>
+                    우주의 균형을 지키는 성스러운 의식이니,<br>
+                    전사여, 두려워하지 말고 나아가라."</em>
+                </p>
+            </div>
+        </div>
+        
+        <div style="background: linear-gradient(135deg, #2d1b69, #11998e); padding: 25px; border-radius: 15px; margin: 30px 0; border: 2px solid #11998e;">
+            <h3 style="color: #ffd700; margin-bottom: 15px;">🌟 현재의 아레나</h3>
+            <p style="line-height: 1.8; color: #e8f4fd;">수천 년이 흘러 지금에 이르기까지, 레전드 아레나는 계속해서 새로운 전사들을 맞이하고 있다. 각자의 사연과 목표를 가진 영웅들이 이곳에서 만나 자신의 한계에 도전한다.</p>
+            
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0;">
+                <div style="background: rgba(255, 255, 255, 0.1); padding: 15px; border-radius: 8px; text-align: center;">
+                    <p style="margin: 0; color: #ffd700; font-weight: bold;">💫 잃어버린 것을 되찾기 위해</p>
+                </div>
+                <div style="background: rgba(255, 255, 255, 0.1); padding: 15px; border-radius: 8px; text-align: center;">
+                    <p style="margin: 0; color: #87ceeb; font-weight: bold;">⚡ 새로운 힘을 얻기 위해</p>
+                </div>
+                <div style="background: rgba(255, 255, 255, 0.1); padding: 15px; border-radius: 8px; text-align: center;">
+                    <p style="margin: 0; color: #ff6b6b; font-weight: bold;">🏆 단순히 강해지고 싶어서</p>
+                </div>
+            </div>
+            
+            <p style="line-height: 1.8; color: #e8f4fd; text-align: center; font-weight: bold;">아레나는 모든 전사를 공평하게 대한다. 출신이나 과거는 중요하지 않다.<br>오직 현재 이 순간의 의지와 용기만이 승부를 가른다.</p>
+        </div>
+        
+        <div style="background: linear-gradient(135deg, #667eea, #764ba2); padding: 25px; border-radius: 15px; margin: 30px 0; border: 2px solid #667eea;">
+            <h3 style="color: #ffd700; margin-bottom: 15px; text-align: center;">🚀 새로운 전설의 시작</h3>
+            <p style="line-height: 1.8; color: #e8f4fd; text-align: center;">이제 당신의 영웅들이 이 전설적인 무대에 발을 들이려 한다. 그들 각자가 가진 독특한 능력과 배경 이야기는 아레나의 역사에 새로운 장을 추가할 것이다.</p>
+            
+            <div style="text-align: center; margin: 20px 0;">
+                <p style="font-size: 1.1em; color: #ffd700; margin: 5px 0;">⚔️ 승리와 패배</p>
+                <p style="font-size: 1.1em; color: #87ceeb; margin: 5px 0;">🤝 우정과 라이벌 관계</p>
+                <p style="font-size: 1.1em; color: #ff6b6b; margin: 5px 0;">📈 성장과 깨달음의 순간들</p>
+            </div>
+            
+            <p style="line-height: 1.8; color: #e8f4fd; text-align: center; font-style: italic;">루나의 빛이 다시 한 번 아레나를 비추며, 새로운 이야기의 시작을 알린다.<br>차원의 균열 너머에서 들려오는 것은 전사들의 함성인가, 아니면 운명의 부름인가?</p>
+        </div>
+        
+        <div style="text-align: center; margin: 40px 0; padding: 25px; background: linear-gradient(135deg, #ff9a9e, #fecfef); border-radius: 15px; border: 2px solid #ff9a9e;">
+            <p style="font-size: 1.3em; font-weight: bold; color: #8b0000; margin: 0; text-shadow: 1px 1px 2px rgba(0,0,0,0.3);">
+                ✨ "모든 전설은 첫 걸음에서 시작된다." ✨<br>
+                <span style="font-size: 0.8em; font-style: italic; color: #4b0082;">- 아스트랄 코덱스 제1장 -</span>
+            </p>
+        </div>
+        
+        <div style="margin: 30px 0; padding: 20px; background: linear-gradient(135deg, #ffeaa7, #fab1a0); border-radius: 12px; border-left: 5px solid #fdcb6e;">
+            <p style="margin: 0; font-size: 1em; color: #2d3436; font-weight: bold; text-align: center;">
+                📚 <strong>아레나 기록관의 주석:</strong><br>
+                <span style="font-weight: normal; font-style: italic;">이 기록은 아레나에 도착한 모든 새로운 전사들에게 전해지는 공식 역사서의 첫 번째 장입니다.<br>
+                당신의 모험이 이 위대한 이야기에 어떤 새로운 전설을 추가할지 기대됩니다.</span>
+            </p>
+        </div>
+        
+        <div style="text-align: center; margin: 50px 0; padding: 30px; background: linear-gradient(135deg, #0f3460, #0c2d48); border-radius: 20px; border: 3px solid #4a9eff; box-shadow: 0 0 30px rgba(74, 158, 255, 0.4);">
+            <h2 style="color: #ffd700; margin-bottom: 20px; font-size: 1.5em; text-shadow: 2px 2px 4px rgba(0,0,0,0.5);">📖 제1장 완료</h2>
+            <p style="color: #e8f4fd; margin: 15px 0; font-size: 1.1em; line-height: 1.6;">아레나의 기원과 루나 에너지의 발견에 대한 이야기가 끝났습니다.</p>
+            <p style="color: #87ceeb; margin: 15px 0; font-size: 1em; font-style: italic;">다음 페이지부터는 새로운 전사들의 모험이 시작됩니다...</p>
+        </div>
+    `;
+    
+    const pageData = {
+        pageNumber: 1,
+        title: '제1장: 시작',
+        content: defaultContent,
+        characters: [],
+        likes: 0,
+        bookmarks: 0,
+        createdAt: new Date().toISOString(),
+        generator: 'system',
+        cost: 0,
+        options: ['default']
+    };
+    
+    // 캐시에 저장
+    storyCache.set(1, pageData);
+    
+    // 화면에 표시
+    displayStoryPage(pageData);
+    
+    console.log('기본 첫 페이지 생성 완료 (로컬)');
+}
+
+// 스토리 페이지 화면에 표시
+function displayStoryPage(pageData) {
+    // 페이지 제목
+    const titleElement = document.getElementById('page-title');
+    if (titleElement) {
+        titleElement.textContent = pageData.title || `제${pageData.pageNumber}장`;
+    }
+    
+    // 페이지 번호
+    const pageNumElements = [
+        document.getElementById('page-display-num'),
+        document.getElementById('current-page-num')
+    ];
+    pageNumElements.forEach(element => {
+        if (element) element.textContent = pageData.pageNumber;
+    });
+    
+    // 페이지 날짜
+    const dateElement = document.getElementById('page-date');
+    if (dateElement && pageData.createdAt) {
+        const date = new Date(pageData.createdAt);
+        dateElement.textContent = date.toLocaleDateString('ko-KR');
+    }
+    
+    // 페이지 내용
+    const contentElement = document.getElementById('page-content');
+    if (contentElement) {
+        contentElement.innerHTML = pageData.content || '내용이 없습니다.';
+    }
+    
+    // 등장 캐릭터들
+    const charactersElement = document.getElementById('page-characters');
+    if (charactersElement) {
+        if (pageData.characters && pageData.characters.length > 0) {
+            charactersElement.innerHTML = pageData.characters.map(char => 
+                `<span class="character-tag">${char.name || char}</span>`
+            ).join('');
+        } else {
+            charactersElement.innerHTML = '';
+        }
+    }
+    
+    // 좋아요 수
+    const likesElement = document.getElementById('page-likes');
+    if (likesElement) {
+        likesElement.textContent = pageData.likes || 0;
+    }
+    
+    // 관리자 삭제 버튼 표시/숨김
+    const deleteBtn = document.getElementById('delete-page-btn');
+    if (deleteBtn) {
+        if (currentUser && currentUser.email === 'admin@legendsarena.com' && pageData.pageNumber === totalStoryPages) {
+            deleteBtn.classList.remove('hidden');
+        } else {
+            deleteBtn.classList.add('hidden');
+        }
+    }
+    
+    // 로딩 숨김
+    hideStoryLoading();
+}
+
+// 네비게이션 버튼 상태 업데이트
+function updateNavigationButtons() {
+    const firstBtn = document.getElementById('first-page-btn');
+    const prevBtn = document.getElementById('prev-page-btn');
+    const nextBtn = document.getElementById('next-page-btn');
+    const lastBtn = document.getElementById('last-page-btn');
+    const generateBtn = document.getElementById('generate-page-btn');
+    const deleteBtn = document.getElementById('delete-page-btn');
+    
+    if (firstBtn) firstBtn.disabled = currentStoryPage <= 1;
+    if (prevBtn) prevBtn.disabled = currentStoryPage <= 1;
+    if (nextBtn) nextBtn.disabled = currentStoryPage >= totalStoryPages;
+    if (lastBtn) lastBtn.disabled = currentStoryPage >= totalStoryPages;
+    
+    // 새 페이지 생성 버튼과 삭제 버튼은 마지막 페이지에서만 표시
+    const isLastPage = currentStoryPage >= totalStoryPages;
+    
+    if (generateBtn) {
+        if (isLastPage) {
+            generateBtn.style.setProperty('display', 'inline-block', 'important');
+            generateBtn.style.setProperty('visibility', 'visible', 'important');
+        } else {
+            generateBtn.style.setProperty('display', 'none', 'important');
+        }
+    }
+    
+    if (deleteBtn) {
+        if (isLastPage) {
+            deleteBtn.style.setProperty('display', 'inline-block', 'important');
+            deleteBtn.style.setProperty('visibility', 'visible', 'important');
+        } else {
+            deleteBtn.style.setProperty('display', 'none', 'important');
+        }
+    }
+    
+    // 페이지 점프 입력 최대값 설정
+    const pageJumpInput = document.getElementById('page-jump-input');
+    if (pageJumpInput) {
+        pageJumpInput.max = totalStoryPages;
+    }
+}
+
+// 로딩 표시
+function showStoryLoading() {
+    const loadingElement = document.getElementById('story-loading');
+    const contentElement = document.getElementById('page-content');
+    
+    if (loadingElement) loadingElement.style.display = 'block';
+    if (contentElement) contentElement.style.display = 'none';
+}
+
+// 로딩 숨김
+function hideStoryLoading() {
+    const loadingElement = document.getElementById('story-loading');
+    const contentElement = document.getElementById('page-content');
+    
+    if (loadingElement) loadingElement.style.display = 'none';
+    if (contentElement) contentElement.style.display = 'block';
+}
+
+// 에러 표시
+function showStoryError(message) {
+    const contentElement = document.getElementById('page-content');
+    if (contentElement) {
+        contentElement.innerHTML = `<div class="error-message" style="text-align: center; color: #ff4757; padding: 50px 0;">${message}</div>`;
+    }
+    hideStoryLoading();
+}
+
+// 페이지 생성 모달 표시
+function showPageGenerationModal() {
+    const modal = document.getElementById('page-generation-modal');
+    if (modal) {
+        // 사용자 루나 표시
+        updateUserLunaDisplay();
+        
+        // 캐릭터 선택 옵션 업데이트
+        updateCharacterSelectOptions();
+        
+        // 기본 페이지 옵션이 항상 선택되도록 보장
+        const basicOption = document.getElementById('basic-option');
+        if (basicOption) {
+            basicOption.checked = true;
+        }
+        
+        // 비용 업데이트
+        updateGenerationCost();
+        
+        // 모달 표시
+        modal.classList.remove('hidden');
+        modal.style.display = 'block';
+    }
+}
+
+// 페이지 생성 모달 초기화
+function initializePageGenerationModal() {
+    const modal = document.getElementById('page-generation-modal');
+    if (!modal) return;
+    
+    // 닫기 버튼
+    const closeBtn = modal.querySelector('.close-btn');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', closePageGenerationModal);
+    }
+    
+    // 취소 버튼
+    const cancelBtn = document.getElementById('cancel-generation-btn');
+    if (cancelBtn) {
+        cancelBtn.addEventListener('click', closePageGenerationModal);
+    }
+    
+    // 생성 확인 버튼
+    const confirmBtn = document.getElementById('confirm-generation-btn');
+    if (confirmBtn) {
+        confirmBtn.addEventListener('click', generateNewPage);
+    }
+    
+    // 기본 페이지 옵션은 항상 선택되어 있고 비활성화되어 있으므로 이벤트 리스너 제외
+    // 추가 옵션 체크박스들에만 이벤트 리스너 추가
+    const additionalOptions = modal.querySelectorAll('.generation-option:not(#basic-option)');
+    additionalOptions.forEach(checkbox => {
+        checkbox.addEventListener('change', updateGenerationCost);
+    });
+    
+    // 캐릭터 중심 옵션 체크박스
+    const characterFocusOption = document.getElementById('character-focus-option');
+    const characterSelect = document.getElementById('character-select');
+    
+    if (characterFocusOption && characterSelect) {
+        characterFocusOption.addEventListener('change', () => {
+            if (characterFocusOption.checked) {
+                characterSelect.classList.remove('hidden');
+            } else {
+                characterSelect.classList.add('hidden');
+            }
+            updateGenerationCost();
+        });
+    }
+    
+    // 특별 이벤트 옵션 체크박스
+    const specialEventOption = document.getElementById('special-event-option');
+    const specialEventInput = document.getElementById('special-event-input');
+    
+    if (specialEventOption && specialEventInput) {
+        specialEventOption.addEventListener('change', () => {
+            if (specialEventOption.checked) {
+                specialEventInput.classList.remove('hidden');
+            } else {
+                specialEventInput.classList.add('hidden');
+                specialEventInput.value = '';
+            }
+            updateGenerationCost();
+        });
+    }
+    
+    // 모달 배경 클릭 시 닫기
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            closePageGenerationModal();
+        }
+    });
+}
+
+// 사용자 루나 표시 업데이트
+function updateUserLunaDisplay() {
+    const userLunaElement = document.getElementById('user-luna-display');
+    const headerLunaElement = document.getElementById('luna-amount');
+    
+    if (userLunaElement && headerLunaElement) {
+        userLunaElement.textContent = headerLunaElement.textContent;
+    }
+}
+
+// 캐릭터 선택 옵션 업데이트
+function updateCharacterSelectOptions() {
+    const characterSelect = document.getElementById('character-select');
+    if (!characterSelect) return;
+    
+    // 기본 옵션 유지
+    characterSelect.innerHTML = '<option value="">캐릭터 선택...</option>';
+    
+    // 사용자의 캐릭터들 추가
+    if (currentUser && allCharactersPool) {
+        const userCharacters = allCharactersPool.filter(char => char.userId === currentUser.uid);
+        userCharacters.forEach(char => {
+            const option = document.createElement('option');
+            option.value = char.id;
+            option.textContent = char.name;
+            characterSelect.appendChild(option);
+        });
+    }
+}
+
+// 생성 비용 업데이트
+function updateGenerationCost() {
+    const optionCheckboxes = document.querySelectorAll('.generation-option:checked');
+    let totalCost = 0;
+    
+    optionCheckboxes.forEach(checkbox => {
+        totalCost += parseInt(checkbox.dataset.cost) || 0;
+    });
+    
+    // 비용 표시 업데이트
+    const totalCostElement = document.getElementById('total-cost');
+    if (totalCostElement) {
+        totalCostElement.textContent = totalCost;
+    }
+    
+    // 생성 버튼 활성화/비활성화
+    const confirmBtn = document.getElementById('confirm-generation-btn');
+    const userLuna = parseInt(document.getElementById('luna-amount').textContent) || 0;
+    
+    if (confirmBtn) {
+        // 옵션이 선택되지 않았거나 루나가 부족하면 비활성화
+        confirmBtn.disabled = totalCost === 0 || userLuna < totalCost || isGeneratingPage;
+    }
+}
+
+// 페이지 생성 모달 닫기
+function closePageGenerationModal() {
+    const modal = document.getElementById('page-generation-modal');
+    if (modal) {
+        modal.style.display = 'none';
+        modal.classList.add('hidden');
+        
+        // 추가 옵션들만 리셋 (기본 페이지는 항상 선택된 상태 유지)
+        const additionalCheckboxes = modal.querySelectorAll('.generation-option:not(#basic-option)');
+        additionalCheckboxes.forEach(checkbox => checkbox.checked = false);
+        
+        const characterSelect = document.getElementById('character-select');
+        if (characterSelect) {
+            characterSelect.classList.add('hidden');
+            characterSelect.value = '';
+        }
+        
+        const specialEventInput = document.getElementById('special-event-input');
+        if (specialEventInput) {
+            specialEventInput.classList.add('hidden');
+            specialEventInput.value = '';
+        }
+        
+        updateGenerationCost();
+    }
+}
+
+// 새 페이지 생성
+async function generateNewPage() {
+    if (isGeneratingPage) return;
+    
+    try {
+        isGeneratingPage = true;
+        
+        // 선택된 옵션들 수집
+        const selectedOptions = [];
+        const optionCheckboxes = document.querySelectorAll('.generation-option:checked');
+        
+        optionCheckboxes.forEach(checkbox => {
+            selectedOptions.push({
+                type: checkbox.id.replace('-option', ''),
+                cost: parseInt(checkbox.dataset.cost)
+            });
+        });
+        
+        // 최소 옵션 확인
+        if (selectedOptions.length === 0) {
+            selectedOptions.push({ type: 'basic', cost: 50 });
+        }
+        
+        // 총 비용 계산
+        const totalCost = selectedOptions.reduce((sum, option) => sum + option.cost, 0);
+        
+        // 루나 확인
+        const userLuna = parseInt(document.getElementById('luna-amount').textContent) || 0;
+        if (userLuna < totalCost) {
+            alert('루나가 부족합니다.');
+            return;
+        }
+        
+        // 특정 캐릭터 선택 확인
+        let selectedCharacter = null;
+        if (selectedOptions.some(opt => opt.type === 'character-focus')) {
+            const characterSelect = document.getElementById('character-select');
+            const characterId = characterSelect.value;
+            if (characterId) {
+                selectedCharacter = allCharactersPool.find(char => char.id === characterId);
+            }
+        }
+        
+        // 특별 이벤트 입력 내용 확인
+        let specialEventDescription = null;
+        if (selectedOptions.some(opt => opt.type === 'special-event')) {
+            const specialEventInput = document.getElementById('special-event-input');
+            if (specialEventInput && specialEventInput.value.trim()) {
+                specialEventDescription = specialEventInput.value.trim();
+            }
+        }
+        
+        // 진행 상태 표시
+        showGenerationProgress();
+        
+        // AI로 페이지 생성
+        const newPageData = await generatePageWithAI(selectedOptions, selectedCharacter, specialEventDescription);
+        
+        if (newPageData) {
+            // 루나 차감
+            await deductLuna(totalCost);
+            
+            // Firebase에 저장
+            await saveNewPageToFirebase(newPageData, selectedOptions, totalCost);
+            
+            // 캐시 업데이트
+            storyCache.set(newPageData.pageNumber, newPageData);
+            
+            // 새 페이지로 이동
+            await updateTotalPages();
+            await loadStoryPage(newPageData.pageNumber);
+            
+            // 모달 닫기
+            closePageGenerationModal();
+            
+            console.log('새 페이지 생성 완료:', newPageData.pageNumber);
+        }
+        
+    } catch (error) {
+        console.error('페이지 생성 중 오류:', error);
+        alert('페이지 생성 중 오류가 발생했습니다.');
+    } finally {
+        isGeneratingPage = false;
+        hideGenerationProgress();
+    }
+}
+
+// 생성 진행 상태 표시
+function showGenerationProgress() {
+    const progressElement = document.getElementById('generation-progress');
+    const actionsElement = document.querySelector('.generation-actions');
+    
+    if (progressElement) progressElement.classList.remove('hidden');
+    if (actionsElement) actionsElement.style.display = 'none';
+}
+
+// 생성 진행 상태 숨김
+function hideGenerationProgress() {
+    const progressElement = document.getElementById('generation-progress');
+    const actionsElement = document.querySelector('.generation-actions');
+    
+    if (progressElement) progressElement.classList.add('hidden');
+    if (actionsElement) actionsElement.style.display = 'flex';
+}
+
+// AI로 페이지 생성
+async function generatePageWithAI(selectedOptions, selectedCharacter, specialEventDescription) {
+    try {
+        // 컨텍스트 수집
+        const context = await gatherStoryContext();
+        
+        // AI 프롬프트 생성
+        const prompt = createStoryPrompt(context, selectedOptions, selectedCharacter, specialEventDescription);
+        
+        // AI 생성 요청
+        const result = await generateWithFallback(prompt);
+        const response = await result.response;
+        const generatedContent = response.text();
+        
+        if (!generatedContent) {
+            throw new Error('AI 생성 실패');
+        }
+        
+        // 등장 캐릭터 자동 선택
+        const appearingCharacters = selectAppearingCharacters(selectedOptions, selectedCharacter);
+        
+        // 페이지 데이터 구성
+        const newPageNumber = totalStoryPages + 1;
+        const pageData = {
+            pageNumber: newPageNumber,
+            title: `제${newPageNumber}장`,
+            content: generatedContent,
+            characters: appearingCharacters,
+            likes: 0,
+            bookmarks: 0,
+            createdAt: new Date().toISOString(),
+            generator: currentUser.uid,
+            generatorName: currentUser.email,
+            cost: selectedOptions.reduce((sum, opt) => sum + opt.cost, 0),
+            options: selectedOptions.map(opt => opt.type)
+        };
+        
+        return pageData;
+        
+    } catch (error) {
+        console.error('AI 페이지 생성 오류:', error);
+        throw error;
+    }
+}
+
+// 페이지 요약 생성
+async function generatePageSummary(pageData) {
+    try {
+        const cleanContent = pageData.content.replace(/<[^>]*>/g, '').trim();
+        const prompt = `다음 소설 페이지의 핵심 내용을 3-4줄로 요약해주세요. 중요한 사건, 캐릭터 행동, 스토리 진행상황을 포함하세요:
+
+${cleanContent}`;
+        
+        const result = await generateWithFallback(prompt);
+        const response = await result.response;
+        const summary = response.text();
+        
+        return {
+            pageNumber: pageData.pageNumber,
+            title: pageData.title,
+            summary: summary,
+            characters: pageData.characters,
+            keyEvents: extractKeyEvents(cleanContent)
+        };
+    } catch (error) {
+        console.error('페이지 요약 생성 오류:', error);
+        return {
+            pageNumber: pageData.pageNumber,
+            title: pageData.title,
+            summary: pageData.content.replace(/<[^>]*>/g, '').slice(0, 200) + '...',
+            characters: pageData.characters,
+            keyEvents: []
+        };
+    }
+}
+
+// 핵심 사건 추출
+function extractKeyEvents(content) {
+    const events = [];
+    const sentences = content.split(/[.!?]/);
+    
+    // 전투, 대화, 발견 등 키워드가 포함된 문장들을 핵심 사건으로 추출
+    const keywords = ['전투', '싸움', '공격', '마법', '스킬', '발견', '만남', '대화', '결정', '변화'];
+    
+    sentences.forEach(sentence => {
+        if (keywords.some(keyword => sentence.includes(keyword)) && sentence.length > 10) {
+            events.push(sentence.trim());
+        }
+    });
+    
+    return events.slice(0, 3); // 최대 3개의 핵심 사건
+}
+
+// 챕터 요약 생성 (5페이지마다)
+async function generateChapterSummary(startPage, endPage) {
+    try {
+        const pages = [];
+        for (let i = startPage; i <= endPage; i++) {
+            const pageData = storyCache.get(i) || await fetchStoryPageFromFirebase(i);
+            if (pageData) {
+                pages.push(await generatePageSummary(pageData));
+            }
+        }
+        
+        const combinedSummary = pages.map(p => `${p.pageNumber}장: ${p.summary}`).join('\n');
+        const prompt = `다음 5개 페이지의 요약을 하나의 챕터 요약으로 통합해주세요. 주요 스토리 흐름과 캐릭터 발전을 중심으로 작성하세요:\n\n${combinedSummary}`;
+        
+        const result = await generateWithFallback(prompt);
+        const response = await result.response;
+        const chapterSummary = response.text();
+        
+        // Firebase에 챕터 요약 저장
+        const summaryRef = doc(db, 'story_summaries', `chapter_${startPage}_${endPage}`);
+        await setDoc(summaryRef, {
+            type: 'chapter',
+            startPage,
+            endPage,
+            summary: chapterSummary,
+            pages: pages,
+            createdAt: new Date().toISOString()
+        });
+        
+        return chapterSummary;
+    } catch (error) {
+        console.error('챕터 요약 생성 오류:', error);
+        return null;
+    }
+}
+
+// 스토리 컨텍스트 수집 (개선된 버전)
+async function gatherStoryContext() {
+    const context = {
+        worldview: '',
+        recentPages: [],
+        chapterSummaries: [],
+        characterStates: {},
+        totalPages: totalStoryPages
+    };
+    
+    try {
+        // 세계관 정보 가져오기
+        const metadataRef = doc(db, 'story_metadata', 'main');
+        const metadataDoc = await getDoc(metadataRef);
+        if (metadataDoc.exists()) {
+            context.worldview = metadataDoc.data().worldview || '';
+        }
+        
+        // 최근 3페이지 가져오기 (상세 내용)
+        const startPage = Math.max(1, totalStoryPages - 2);
+        for (let i = startPage; i <= totalStoryPages; i++) {
+            const pageData = storyCache.get(i) || await fetchStoryPageFromFirebase(i);
+            if (pageData) {
+                context.recentPages.push({
+                    pageNumber: pageData.pageNumber,
+                    title: pageData.title,
+                    content: pageData.content,
+                    characters: pageData.characters
+                });
+            }
+        }
+        
+        // 챕터 요약들 가져오기 (5페이지 단위)
+        const summariesRef = collection(db, 'story_summaries');
+        const summariesQuery = query(summariesRef, where('type', '==', 'chapter'));
+        const summariesSnapshot = await getDocs(summariesQuery);
+        
+        summariesSnapshot.forEach(doc => {
+            const data = doc.data();
+            if (data.endPage < totalStoryPages - 2) { // 최근 3페이지는 제외
+                context.chapterSummaries.push({
+                    startPage: data.startPage,
+                    endPage: data.endPage,
+                    summary: data.summary
+                });
+            }
+        });
+        
+        // 챕터 요약이 없는 구간이 있다면 생성
+        await ensureChapterSummaries(totalStoryPages);
+        
+        // 캐릭터 상태 정보 수집
+        if (allCharactersPool && allCharactersPool.length > 0) {
+            allCharactersPool.forEach(char => {
+                context.characterStates[char.id] = {
+                    name: char.name,
+                    class: char.character_class || char.class,
+                    skills: char.skills || [],
+                    wins: char.wins || 0,
+                    losses: char.losses || 0,
+                    lastAppearance: 0
+                };
+            });
+        }
+        
+        return context;
+        
+    } catch (error) {
+        console.error('컨텍스트 수집 오류:', error);
+        return context;
+    }
+}
+
+// 챕터 요약 보장 함수
+async function ensureChapterSummaries(totalPages) {
+    try {
+        // 5페이지 단위로 챕터 요약이 있는지 확인하고 없으면 생성
+        for (let start = 1; start <= totalPages - 5; start += 5) {
+            const end = Math.min(start + 4, totalPages - 3); // 최근 3페이지는 제외
+            
+            const summaryRef = doc(db, 'story_summaries', `chapter_${start}_${end}`);
+            const summaryDoc = await getDoc(summaryRef);
+            
+            if (!summaryDoc.exists() && end >= start) {
+                console.log(`챕터 요약 생성 중: ${start}-${end}페이지`);
+                await generateChapterSummary(start, end);
+            }
+        }
+    } catch (error) {
+        console.error('챕터 요약 보장 오류:', error);
+    }
+}
+
+// AI 프롬프트 생성
+function createStoryPrompt(context, selectedOptions, selectedCharacter, specialEventDescription) {
+    let prompt = `당신은 '레전드 아레나 연대기'라는 판타지 소설의 작가입니다. 다음 조건에 맞는 새로운 페이지를 작성해주세요.
+
+`;
+    
+    // 세계관 정보
+    if (context.worldview) {
+        prompt += `**세계관:**\n${context.worldview}\n\n`;
+    }
+    
+    // 전체 스토리 맥락 (챕터 요약들)
+    if (context.chapterSummaries.length > 0) {
+        prompt += `**전체 스토리 맥락:**\n`;
+        context.chapterSummaries.forEach(chapter => {
+            prompt += `- ${chapter.startPage}-${chapter.endPage}장: ${chapter.summary}\n`;
+        });
+        prompt += `\n`;
+    }
+    
+    // 최근 스토리 흐름 (상세)
+    if (context.recentPages.length > 0) {
+        prompt += `**최근 스토리 흐름 (상세):**\n`;
+        context.recentPages.forEach((page, index) => {
+            prompt += `- 페이지 ${page.pageNumber}: ${page.title}\n`;
+            prompt += `  등장인물: ${page.characters.map(c => c.name || c).join(', ')}\n`;
+            
+            // 마지막 페이지의 경우 내용의 마지막 부분을 포함
+            if (index === context.recentPages.length - 1 && page.content) {
+                // HTML 태그 제거하고 마지막 300자 정도만 추출
+                const cleanContent = page.content.replace(/<[^>]*>/g, '').trim();
+                const lastPart = cleanContent.length > 300 ? 
+                    '...' + cleanContent.slice(-300) : cleanContent;
+                prompt += `  마지막 상황: ${lastPart}\n`;
+            }
+        });
+        prompt += `\n`;
+    }
+    
+    // 선택된 옵션에 따른 요구사항
+    prompt += `**작성 요구사항:**\n`;
+    
+    selectedOptions.forEach(option => {
+        switch (option.type) {
+            case 'basic':
+                prompt += `- 자연스러운 스토리 진행으로 작성\n`;
+                break;
+            case 'character-focus':
+                if (selectedCharacter) {
+                    prompt += `- 기존 스토리의 자연스러운 흐름 속에서 ${selectedCharacter.name} 캐릭터가 조연으로 등장하여 의미 있는 역할을 하도록 작성\n`;
+                    prompt += `- ${selectedCharacter.name}의 클래스: ${selectedCharacter.character_class || selectedCharacter.class}\n`;
+                    if (selectedCharacter.skills && selectedCharacter.skills.length > 0) {
+                        prompt += `- ${selectedCharacter.name}의 주요 스킬: ${selectedCharacter.skills.map(s => s.name || s.skill_name).join(', ')}\n`;
+                    }
+                    prompt += `- ⚠️ 주의: ${selectedCharacter.name}는 주인공이 아닌 조연으로 등장시키고, 기존 스토리와의 연결성을 절대 끊지 말며, 이전 상황에서 자연스럽게 이어지는 범위 내에서만 활용할 것\n`;
+                    prompt += `- ⚠️ 시점 주의: 소설의 주인공 시점을 바꾸지 말고, ${selectedCharacter.name}는 조연으로서 스토리에 기여하도록 할 것\n`;
+                }
+                break;
+            case 'long-page':
+                prompt += `- 평소보다 더 자세하고 긴 내용으로 작성 (최소 800자 이상)\n`;
+                break;
+            case 'special-event':
+                if (specialEventDescription) {
+                    prompt += `- 다음 특별 이벤트를 기존 스토리 흐름에 자연스럽게 녹여서 작성: ${specialEventDescription}\n`;
+                } else {
+                    prompt += `- 기존 스토리 흐름에 자연스럽게 어울리는 특별한 이벤트 포함 (전투, 모험, 발견, 만남 등)\n`;
+                }
+                break;
+        }
+    });
+    
+    // 등장 캐릭터 정보 추가
+    const appearingCharacters = selectAppearingCharacters(selectedOptions, selectedCharacter);
+    if (appearingCharacters.length > 0) {
+        prompt += `\n**🚨 필수 등장 캐릭터 (절대 누락 금지) 🚨:**\n`;
+        appearingCharacters.forEach(char => {
+            const charData = allCharactersPool.find(c => c.id === char.id);
+            if (charData) {
+                prompt += `- ${char.name} (${char.role === 'main' ? '주인공' : '조연'}): ${charData.character_class || charData.class}\n`;
+                if (charData.skills && charData.skills.length > 0) {
+                    prompt += `  스킬: ${charData.skills.map(s => s.name || s.skill_name).join(', ')}\n`;
+                }
+            }
+        });
+        prompt += `\n⚠️ 위 캐릭터들은 모두 스토리에 등장해야 하며, 각자의 역할과 대사가 있어야 합니다.\n`;
+        prompt += `⚠️ 캐릭터 이름을 정확히 사용하고, 각 캐릭터의 개성과 스킬을 반영해주세요.\n\n`;
+    }
+    
+    prompt += `\n**🎯 핵심 작성 규칙:**\n`;
+    prompt += `1. 한국어로 작성\n`;
+    prompt += `2. HTML 태그 사용 가능 (p, h4, strong, em, div 등)\n`;
+    prompt += `3. 🔗 **스토리 연결성 최우선**: 위에 제시된 전체 스토리 맥락과 최근 상황을 철저히 분석하여 모순 없는 자연스러운 이어짐 보장\n`;
+    prompt += `4. 📚 **설정 일관성**: 기존 캐릭터들의 성격, 능력, 관계, 과거 사건들과 완벽히 일치하도록 작성\n`;
+    prompt += `5. 🎭 **캐릭터 연속성**: 캐릭터들의 이전 행동, 감정 상태, 목표가 자연스럽게 이어지도록 작성\n`;
+    prompt += `6. 🌍 **세계관 준수**: 설정된 세계관의 규칙, 마법 시스템, 사회 구조를 엄격히 따를 것\n`;
+    prompt += `7. 🔥 **필수 캐릭터 포함**: 위에 명시된 필수 등장 캐릭터들을 반드시 스토리에 포함시키고, 각자 최소 1번 이상 대사나 행동을 하게 할 것\n`;
+    prompt += `8. 💬 **능동적 참여**: 캐릭터들이 단순히 언급만 되는 것이 아니라 실제로 행동하고 대화하는 장면을 포함할 것\n`;
+    prompt += `9. 🎪 **흥미진진한 전개**: 몰입감 있고 재미있는 스토리로 작성\n`;
+    prompt += `10. 📖 **클리프행어**: 페이지 끝에 다음 이야기가 궁금해지는 요소 포함\n`;
+    prompt += `🚨 **절대 금지사항**: 새로운 캐릭터가 등장한다고 해서 장소만 바뀌고 완전히 새로운 이야기를 시작하지 말 것. 반드시 이전 페이지의 상황과 자연스럽게 연결되어야 함\n`;
+    if (context.recentPages.length > 0) {
+        prompt += `11. 🚨 **직접 연결 필수**: 이전 페이지의 마지막 상황에서 시간적, 공간적, 상황적으로 자연스럽게 이어지도록 작성 (위에 제시된 '마지막 상황'을 반드시 참고하여 그 직후 상황부터 시작할 것)\n`;
+    }
+    if (context.chapterSummaries.length > 0) {
+        prompt += `12. 📋 **전체 맥락 반영**: 위에 제시된 전체 스토리 맥락의 주요 사건들과 캐릭터 발전 과정을 고려하여 모순되지 않도록 작성\n`;
+    }
+    prompt += `13. 🔄 **연속성 우선**: 어떤 옵션이 선택되더라도 스토리의 연속성이 최우선이며, 옵션은 기존 스토리 흐름에 자연스럽게 녹여낼 것\n`;
+    prompt += `\n`;
+    
+    prompt += `새로운 페이지의 내용만 작성해주세요:`;
+    
+    return prompt;
+}
+
+// 등장 캐릭터 자동 선택
+function selectAppearingCharacters(selectedOptions, selectedCharacter) {
+    const appearingCharacters = [];
+    
+    // 특정 캐릭터가 선택된 경우 (캐릭터 중심 옵션)
+    if (selectedCharacter) {
+        appearingCharacters.push({
+            id: selectedCharacter.id,
+            name: selectedCharacter.name,
+            role: 'supporting'  // 조연으로 변경
+        });
+    }
+    
+    // 특별 이벤트 옵션이 선택된 경우에만 추가 캐릭터 자동 선택
+    const hasSpecialEvent = selectedOptions.some(opt => opt.type === 'special-event');
+    
+    if (hasSpecialEvent) {
+        // 추가 캐릭터 자동 선택 (인기도, 균형, 최근 등장 빈도 고려)
+        const availableCharacters = allCharactersPool.filter(char => 
+            !selectedCharacter || char.id !== selectedCharacter.id
+        );
+        
+        // 특별 이벤트면 1명 추가
+        const additionalCount = Math.min(1, availableCharacters.length);
+        
+        const shuffled = availableCharacters.sort(() => 0.5 - Math.random());
+        
+        for (let i = 0; i < additionalCount; i++) {
+            appearingCharacters.push({
+                id: shuffled[i].id,
+                name: shuffled[i].name,
+                role: 'supporting'
+            });
+        }
+    }
+    
+    // 일반 스토리(basic)나 캐릭터 중심(character-focus) 옵션만 선택된 경우에는 추가 캐릭터 자동 선택 안함
+    // 캐릭터 중심 옵션은 선택된 캐릭터만 등장하고, 기존 스토리의 연속성이 더 잘 유지됨
+    
+    return appearingCharacters;
+}
+
+// 루나 차감
+async function deductLuna(amount) {
+    try {
+        const userRef = doc(db, 'users', currentUser.uid);
+        const userDoc = await getDoc(userRef);
+        
+        if (userDoc.exists()) {
+            const currentLuna = userDoc.data().luna || 0;
+            const newLuna = Math.max(0, currentLuna - amount);
+            
+            await updateDoc(userRef, { luna: newLuna });
+            
+            // UI 업데이트
+            const lunaElement = document.getElementById('luna-amount');
+            if (lunaElement) {
+                lunaElement.textContent = newLuna;
+            }
+        }
+    } catch (error) {
+        console.error('루나 차감 오류:', error);
+        throw error;
+    }
+}
+
+// Firebase에 새 페이지 저장
+async function saveNewPageToFirebase(pageData, selectedOptions, totalCost) {
+    try {
+        // 페이지 저장
+        const pagesRef = collection(db, 'story_pages');
+        await addDoc(pagesRef, pageData);
+        
+        // 메타데이터 업데이트
+        const metadataRef = doc(db, 'story_metadata', 'main');
+        await updateDoc(metadataRef, {
+            totalPages: pageData.pageNumber,
+            lastUpdated: new Date().toISOString()
+        });
+        
+        // 새로운 챕터 완성 시 요약 생성 (5페이지 단위)
+        if (pageData.pageNumber % 5 === 0 && pageData.pageNumber >= 5) {
+            const startPage = pageData.pageNumber - 4;
+            const endPage = pageData.pageNumber;
+            
+            console.log(`새 챕터 완성: ${startPage}-${endPage}페이지 요약 생성 중...`);
+            try {
+                await generateChapterSummary(startPage, endPage);
+                console.log(`챕터 요약 생성 완료: ${startPage}-${endPage}페이지`);
+            } catch (summaryError) {
+                console.error('챕터 요약 생성 오류:', summaryError);
+                // 요약 생성 실패해도 페이지 저장은 성공으로 처리
+            }
+        }
+        
+        console.log('새 페이지 Firebase 저장 완료');
+        
+    } catch (error) {
+        console.error('Firebase 저장 오류:', error);
+        throw error;
+    }
+}
+
+// 페이지 좋아요 토글
+async function togglePageLike() {
+    // 구현 예정
+    console.log('페이지 좋아요 기능 - 구현 예정');
+}
+
+// 페이지 북마크 토글
+async function togglePageBookmark() {
+    // 구현 예정
+    console.log('페이지 북마크 기능 - 구현 예정');
+}
+
+// 현재 페이지 삭제 (비밀번호 확인)
+async function deleteCurrentPage() {
+    // 비밀번호 확인
+    const password = prompt('페이지 삭제를 위해 비밀번호를 입력하세요:');
+    if (password !== '4321') {
+        alert('비밀번호가 틀렸습니다.');
+        return;
+    }
+    
+    const currentPageNum = parseInt(document.getElementById('current-page-num').textContent);
+    
+    let confirmMessage = `정말로 ${currentPageNum}페이지를 삭제하시겠습니까?`;
+    if (totalStoryPages <= 1) {
+        confirmMessage = '첫 페이지를 삭제하고 새로운 기본 페이지를 생성하시겠습니까?';
+    }
+    
+    if (!confirm(confirmMessage)) {
+        return;
+    }
+    
+    try {
+        // Firebase에서 현재 페이지 찾기 및 삭제
+        const pagesRef = collection(db, 'story_pages');
+        const q = query(pagesRef, where('pageNumber', '==', currentPageNum));
+        const querySnapshot = await getDocs(q);
+        
+        if (!querySnapshot.empty) {
+            const docToDelete = querySnapshot.docs[0];
+            await deleteDoc(docToDelete.ref);
+            
+            // 캐시에서 제거
+            storyCache.delete(currentPageNum);
+            
+            // 삭제된 페이지보다 큰 페이지 번호들을 1씩 감소
+            const allPagesQuery = query(pagesRef, where('pageNumber', '>', currentPageNum));
+            const allPagesSnapshot = await getDocs(allPagesQuery);
+            
+            const batch = writeBatch(db);
+            allPagesSnapshot.docs.forEach(doc => {
+                const newPageNumber = doc.data().pageNumber - 1;
+                batch.update(doc.ref, { pageNumber: newPageNumber });
+                
+                // 캐시 업데이트
+                const pageData = doc.data();
+                pageData.pageNumber = newPageNumber;
+                storyCache.set(newPageNumber, pageData);
+                storyCache.delete(doc.data().pageNumber);
+            });
+            
+            await batch.commit();
+            
+            // 첫 페이지를 삭제한 경우 새로운 기본 페이지 생성
+            if (totalStoryPages <= 1) {
+                // 메타데이터 초기화
+                const metadataRef = doc(db, 'story_metadata', 'main');
+                await updateDoc(metadataRef, {
+                    totalPages: 0,
+                    lastUpdated: new Date().toISOString()
+                });
+                
+                // 새로운 기본 페이지 생성
+                await createDefaultFirstPage();
+                console.log('첫 페이지 삭제 후 새로운 기본 페이지 생성 완료');
+            } else {
+                // 메타데이터 업데이트
+                const metadataRef = doc(db, 'story_metadata', 'main');
+                await updateDoc(metadataRef, {
+                    totalPages: totalStoryPages - 1,
+                    lastUpdated: new Date().toISOString()
+                });
+                
+                // 적절한 페이지로 이동
+                await updateTotalPages();
+                const targetPage = Math.min(currentPageNum, totalStoryPages - 1);
+                await loadStoryPage(targetPage || 1);
+                console.log(`${currentPageNum}페이지 삭제 완료`);
+            }
+        }
+        
+    } catch (error) {
+        console.error('페이지 삭제 오류:', error);
+        alert('페이지 삭제 중 오류가 발생했습니다.');
+    }
+}
+
+// 최신 페이지 삭제 (관리자 전용)
+async function deleteLatestPage() {
+    if (!currentUser || currentUser.email !== 'admin@legendsarena.com') {
+        alert('관리자만 삭제할 수 있습니다.');
+        return;
+    }
+    
+    let confirmMessage = '정말로 최신 페이지를 삭제하시겠습니까?';
+    if (totalStoryPages <= 1) {
+        confirmMessage = '첫 페이지를 삭제하고 새로운 기본 페이지를 생성하시겠습니까?';
+    }
+    
+    if (!confirm(confirmMessage)) {
+        return;
+    }
+    
+    try {
+        // Firebase에서 최신 페이지 찾기 및 삭제
+        const pagesRef = collection(db, 'story_pages');
+        const q = query(pagesRef, where('pageNumber', '==', totalStoryPages));
+        const querySnapshot = await getDocs(q);
+        
+        if (!querySnapshot.empty) {
+            const docToDelete = querySnapshot.docs[0];
+            await deleteDoc(docToDelete.ref);
+            
+            // 캐시에서 제거
+            storyCache.delete(totalStoryPages);
+            
+            // 첫 페이지를 삭제한 경우 새로운 기본 페이지 생성
+            if (totalStoryPages <= 1) {
+                // 메타데이터 초기화
+                const metadataRef = doc(db, 'story_metadata', 'main');
+                await updateDoc(metadataRef, {
+                    totalPages: 0,
+                    lastUpdated: new Date().toISOString()
+                });
+                
+                // 새로운 기본 페이지 생성
+                await createDefaultFirstPage();
+                console.log('첫 페이지 삭제 후 새로운 기본 페이지 생성 완료');
+            } else {
+                // 메타데이터 업데이트
+                const metadataRef = doc(db, 'story_metadata', 'main');
+                await updateDoc(metadataRef, {
+                    totalPages: totalStoryPages - 1,
+                    lastUpdated: new Date().toISOString()
+                });
+                
+                // 이전 페이지로 이동
+                await updateTotalPages();
+                await loadStoryPage(totalStoryPages);
+                console.log('최신 페이지 삭제 완료');
+            }
+        }
+        
+    } catch (error) {
+        console.error('페이지 삭제 오류:', error);
+        alert('페이지 삭제 중 오류가 발생했습니다.');
+    }
+}
+
+// 소설 시스템 전역 함수 등록
+window.initializeStorySystem = initializeStorySystem;
+window.loadStoryPage = loadStoryPage;
+window.showPageGenerationModal = showPageGenerationModal;
+window.closePageGenerationModal = closePageGenerationModal;
+window.generateNewPage = generateNewPage;
+window.togglePageLike = togglePageLike;
+window.togglePageBookmark = togglePageBookmark;
+window.deleteLatestPage = deleteLatestPage;
+window.deleteCurrentPage = deleteCurrentPage;
+
+console.log('소설 시스템 모듈 로드 완료');

@@ -22,6 +22,7 @@
             </div>
         </div>
         <nav class="header-nav">
+            <button id="show-story-btn" class="hidden">📖 스토리</button>
             <button id="show-ranking-btn" class="hidden">🏅 랭킹</button>
             <button id="admin-btn" class="hidden">⚙️ 관리</button>
             <button id="logout-btn" class="hidden">🚪 로그아웃</button>
@@ -246,6 +247,61 @@
 
 
             </section>
+            
+            <!-- 소설 섹션 (숨겨진 상태) -->
+            <section id="story-section" class="hidden">
+                <div class="story-header">
+                    <button id="back-to-cards-from-story-btn" class="back-btn">← 뒤로</button>
+                    <h2>📖 레전드 아레나 연대기</h2>
+                    <div class="story-subtitle">캐릭터들이 만들어가는 무한한 이야기</div>
+                </div>
+                
+                <!-- 소설 내용 -->
+                <div class="story-content">
+                    <div class="story-page">
+                        <div class="page-header">
+                            <h3 id="page-title">제1장: 시작</h3>
+                            <div class="page-meta">
+                                <span class="page-number">페이지 <span id="page-display-num">1</span></span>
+                                <span class="page-date" id="page-date"></span>
+                            </div>
+                        </div>
+                        
+                        <div class="page-content" id="page-content">
+                            <div class="loading-story" id="story-loading">소설을 불러오는 중...</div>
+                        </div>
+                        
+                        <div class="page-footer">
+                            <div class="page-characters" id="page-characters">
+                                <!-- 등장 캐릭터들이 여기에 표시됩니다 -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 소설 네비게이션 (소설 내용 아래로 이동) -->
+                <div class="story-navigation">
+                    <div class="story-nav-left">
+                        <button id="first-page-btn" class="nav-btn" title="첫 페이지">⏮️</button>
+                        <button id="prev-page-btn" class="nav-btn" title="이전 페이지">◀️</button>
+                    </div>
+                    
+                    <div class="story-nav-center">
+                        <span class="page-info">
+                            <span id="current-page-num">1</span> / <span id="total-pages-num">1</span>
+                        </span>
+                        <input type="number" id="page-jump-input" placeholder="페이지" min="1" class="page-jump">
+                        <button id="page-jump-btn" class="nav-btn">이동</button>
+                    </div>
+                    
+                    <div class="story-nav-right">
+                        <button id="next-page-btn" class="nav-btn" title="다음 페이지">▶️</button>
+                        <button id="last-page-btn" class="nav-btn" title="마지막 페이지">⏭️</button>
+                        <button id="generate-page-btn" class="generate-btn" title="새 페이지 생성">✨ 새 페이지</button>
+                        <button id="delete-page-btn" class="delete-btn" title="현재 페이지 삭제" onclick="deleteCurrentPage()">🗑️ 삭제</button>
+                    </div>
+                </div>
+            </section>
         </div>
     </main>
 
@@ -306,6 +362,81 @@
                 </div>
             </div>
             <button id="generate-battle-image-btn" class="hidden">이 장면, 이미지로 생성</button>
+        </div>
+    </div>
+
+    <!-- 페이지 생성 모달 -->
+    <div id="page-generation-modal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-btn">&times;</span>
+            <h2>✨ 새로운 페이지 생성</h2>
+            <div class="generation-options">
+                <h3>페이지 생성 옵션</h3>
+                <p class="generation-desc">기본 페이지는 자동으로 포함되며, 추가 옵션을 선택할 수 있습니다.</p>
+                
+                <div class="option-group">
+                    <label class="option-item basic-option-item">
+                        <input type="checkbox" id="basic-option" class="generation-option" data-cost="10" checked disabled>
+                        <div class="option-content">
+                            <div class="option-title">✅ 기본 페이지 (10 루나)</div>
+                            <div class="option-desc">자연스러운 스토리 진행 - 항상 포함</div>
+                        </div>
+                    </label>
+                    
+                    <label class="option-item">
+                        <input type="checkbox" id="character-focus-option" class="generation-option" data-cost="15">
+                        <div class="option-content">
+                            <div class="option-title">특정 캐릭터 중심 (15 루나)</div>
+                            <div class="option-desc">선택한 캐릭터가 소설내에 등장</div>
+                            <select id="character-select" class="character-select hidden">
+                                <option value="">캐릭터 선택...</option>
+                            </select>
+                        </div>
+                    </label>
+                    
+                    <label class="option-item">
+                        <input type="checkbox" id="long-page-option" class="generation-option" data-cost="20">
+                        <div class="option-content">
+                            <div class="option-title">긴 페이지 (20 루나)</div>
+                            <div class="option-desc">더 자세하고 긴 스토리</div>
+                        </div>
+                    </label>
+                    
+                    <label class="option-item">
+                        <input type="checkbox" id="special-event-option" class="generation-option" data-cost="50">
+                        <div class="option-content">
+                            <div class="option-title">특별 이벤트 (50 루나)</div>
+                            <div class="option-desc">전투, 모험, 로맨스 등 특별한 사건 (특정 캐릭터와 함께하려면 캐릭터 중심 옵션 추가 선택)</div>
+                            <textarea id="special-event-input" class="special-event-input hidden" placeholder="원하는 특별 이벤트를 설명해주세요... 💡 생성된 캐릭터를 포함하려면 '특정 캐릭터 중심' 옵션에서 캐릭터를 선택하고, 여기에 그 캐릭터 이름을 정확히 적어 상황을 설명하세요!\n\n예시:\n- 비버가 갑작스러운 드래곤 습격을 받는다\n- 엘프 마법사 아리아가 신비한 마법 유물을 발견한다\n- 전사 가렌이 적대 세력과 일대일 결투를 벌인다\n- 도적 루나가 숨겨진 던전에서 함정에 걸린다\n- 성기사 세라핀과 암살자 제로 사이에 갈등이 생긴다"></textarea>
+                        </div>
+                    </label>
+                </div>
+                
+                <div class="generation-summary">
+                    <div class="cost-summary">
+                        <span class="cost-label">총 비용:</span>
+                        <span id="total-cost" class="cost-value">0</span>
+                        <span class="luna-symbol">🌙</span>
+                    </div>
+                    <div class="user-luna">
+                        <span class="luna-label">보유 루나:</span>
+                        <span id="user-luna-display" class="luna-value">0</span>
+                        <span class="luna-symbol">🌙</span>
+                    </div>
+                </div>
+                
+                <div class="generation-actions">
+                    <button id="cancel-generation-btn" class="cancel-btn">취소</button>
+                    <button id="confirm-generation-btn" class="confirm-btn" disabled>페이지 생성</button>
+                </div>
+                
+                <div id="generation-progress" class="generation-progress hidden">
+                    <div class="progress-text">페이지를 생성하는 중...</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill"></div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
