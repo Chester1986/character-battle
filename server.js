@@ -7,6 +7,59 @@ const HF_TOKEN_PRIMARY = process.env.HF_TOKEN;
 const HF_TOKEN_FALLBACK = process.env.HF_FALLBACK_TOKEN || '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';
 const HF_TOKEN_FALLBACK2 = process.env.HF_FALLBACK_TOKEN2 || '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';
 
+// Runware API 설정
+const RUNWARE_API_KEY = process.env.RUNWARE_API_KEY;
+const RUNWARE_API_URL = 'https://api.runware.ai/v1';
+
+// UUID 생성 함수
+function generateUUID() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
+// Runware API 호출 함수
+async function generateImageWithRunware(prompt) {
+    try {
+        const taskUUID = generateUUID();
+        const response = await fetch(RUNWARE_API_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${RUNWARE_API_KEY}`
+            },
+            body: JSON.stringify([{
+                taskType: 'imageInference',
+                taskUUID: taskUUID,
+                positivePrompt: prompt,
+                model: 'runware:100@1',
+                numberResults: 1,
+                height: 512,
+                width: 512,
+                steps: 4,
+                CFGScale: 1.0
+            }]),
+            timeout: 30000
+        });
+
+        if (!response.ok) {
+            throw new Error(`Runware API 오류: ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (data && data.length > 0 && data[0].imageURL) {
+            return data[0].imageURL;
+        } else {
+            throw new Error('Runware API에서 이미지 URL을 받지 못했습니다');
+        }
+    } catch (error) {
+        console.error('Runware API 오류:', error);
+        throw error;
+    }
+}
+
 const app = express();
 
 // JSON 요청 본문을 파싱하기 위한 미들웨어
@@ -33,7 +86,29 @@ app.post('/api/generate-image', async (req, res) => {
         timeout: 60000
     };
 
-    // 1단계: Hugging Face 기본 토큰 시도
+    // 1단계: Runware API 시도
+    if (RUNWARE_API_KEY) {
+        console.log(`\n--- Attempting Runware API (Primary) ---`);
+        try {
+            const imageUrl = await generateImageWithRunware(prompt);
+            
+            console.log(`✅ SUCCESS with Runware API (Primary)`);
+            console.log(`Generated image URL: ${imageUrl}`);
+            
+            return res.json({
+                success: true,
+                imageUrl: imageUrl,
+                model: 'Runware',
+                source: 'runware-primary'
+            });
+        } catch (error) {
+            console.log(`❌ Runware API (Primary) ERROR: ${error.message}`);
+        }
+    } else {
+        console.log(`\n⚠️ Runware API key not configured, skipping primary...`);
+    }
+
+    // 2단계: Hugging Face 기본 토큰 시도
     console.log(`\n--- Attempting Hugging Face (Primary Token) ---`);
     try {
         const controller = new AbortController();
@@ -86,7 +161,7 @@ app.post('/api/generate-image', async (req, res) => {
         console.log(`❌ Hugging Face Primary ERROR: ${error.message}`);
     }
 
-    // 2단계: Hugging Face 풀백 토큰 시도
+    // 3단계: Hugging Face 풀백 토큰 시도
     console.log(`\n--- Attempting Hugging Face (Fallback Token) ---`);
     try {
         const controller = new AbortController();
@@ -134,7 +209,7 @@ app.post('/api/generate-image', async (req, res) => {
         console.log(`❌ Hugging Face Fallback ERROR: ${error.message}`);
     }
 
-    // 3단계: Hugging Face 두 번째 풀백 토큰 시도
+    // 4단계: Hugging Face 두 번째 풀백 토큰 시도
     console.log(`\n--- Attempting Hugging Face (Second Fallback Token) ---`);
     try {
         const controller = new AbortController();
@@ -182,8 +257,8 @@ app.post('/api/generate-image', async (req, res) => {
         console.log(`❌ Hugging Face Second Fallback ERROR: ${error.message}`);
     }
 
-    // 4단계: 모든 토큰 실패 시 플레이스홀더
-    console.log(`\n🔄 All Hugging Face tokens failed, returning placeholder image`);
+    // 5단계: 모든 API 실패 시 플레이스홀더
+    console.log(`\n🔄 All APIs failed, returning placeholder image`);
     
     const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
         <rect width="100%" height="100%" fill="#4ecdc4"/>
@@ -197,7 +272,7 @@ app.post('/api/generate-image', async (req, res) => {
             Temporarily Unavailable
         </text>
         <text x="50%" y="70%" font-family="Arial, sans-serif" font-size="12" fill="white" text-anchor="middle" dominant-baseline="middle">
-            All 3 Hugging Face tokens failed
+            All 4 APIs failed
         </text>
         <text x="50%" y="80%" font-family="Arial, sans-serif" font-size="12" fill="white" text-anchor="middle" dominant-baseline="middle">
             Using placeholder image
@@ -211,7 +286,7 @@ app.post('/api/generate-image', async (req, res) => {
         imageUrl: `data:image/svg+xml;base64,${placeholderBase64}`,
         model: 'Placeholder',
         source: 'placeholder',
-        message: 'All 3 Hugging Face tokens are temporarily unavailable. Using placeholder image.'
+        message: 'All 4 APIs (Runware + 3 Hugging Face tokens) are temporarily unavailable. Using placeholder image.'
     });
 });
 
@@ -226,11 +301,14 @@ if (require.main === module) {
         console.log(`🤗 Hugging Face Primary: ${HF_TOKEN_PRIMARY ? 'Configured ✅' : 'Missing ❌'}`);
         console.log(`🤗 Hugging Face Fallback: ${HF_TOKEN_FALLBACK ? 'Configured ✅' : 'Missing ❌'}`);
         console.log(`🤗 Hugging Face Fallback2: ${HF_TOKEN_FALLBACK2 ? 'Configured ✅' : 'Missing ❌'}`);
+        console.log(`🚀 Runware API: ${RUNWARE_API_KEY ? 'Configured ✅' : 'Missing ❌'}`);
         console.log(`\n=== API Status ===`);
-        console.log(`Primary: Hugging Face Token 1`);
-        console.log(`Fallback: Hugging Face Token 2`);
-        console.log(`Fallback2: Hugging Face Token 3`);
-        console.log(`==================\n`);
+        console.log(`Primary: Runware API`);
+        console.log(`Fallback 1: Hugging Face Token 1`);
+        console.log(`Fallback 2: Hugging Face Token 2`);
+        console.log(`Fallback 3: Hugging Face Token 3`);
+        console.log(`Final: Placeholder Image`);
+        console.log(`\n`);
     });
 }
 
