@@ -772,8 +772,8 @@ function initializeUserCharactersListener(userId) {
         
         console.log(`✅ 사용자 캐릭터 풀 업데이트: ${userCharactersPool.length}개`);
         
-        // 앱 콘텐츠가 표시되어 있다면 UI 업데이트 (캐릭터 생성 후 즉시 반영)
-        if (!appContent.classList.contains('hidden')) {
+        // 캐릭터 카드 섹션이 표시되어 있을 때만 UI 업데이트 (캐릭터 생성 후 즉시 반영)
+        if (!appContent.classList.contains('hidden') && !characterCardsSection.classList.contains('hidden')) {
             displayUserCharacters(userCharactersPool);
         }
     }, (error) => {
