@@ -1,5 +1,7 @@
 const express = require('express');
 const path = require('path');
+const FormData = require('form-data');
+const axios = require('axios');
 require('dotenv').config();
 
 // Hugging Face 토큰 설정
@@ -7,9 +9,20 @@ const HF_TOKEN_PRIMARY = process.env.HF_TOKEN;
 const HF_TOKEN_FALLBACK = process.env.HF_FALLBACK_TOKEN || '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';
 const HF_TOKEN_FALLBACK2 = process.env.HF_FALLBACK_TOKEN2 || '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';
 
+// Imagine Art API 설정
+const IMAGINE_API_KEY = process.env.IMAGINE_API_KEY;
+const IMAGINE_API_URL = 'https://api.vyro.ai/v2/image/generations';
+
 // Runware API 설정
 const RUNWARE_API_KEY = process.env.RUNWARE_API_KEY;
 const RUNWARE_API_URL = 'https://api.runware.ai/v1';
+
+// Hugging Face 모델 설정
+const hfModel = {
+    name: 'FLUX.1-schnell',
+    url: 'https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell',
+    timeout: 60000
+};
 
 // UUID 생성 함수
 function generateUUID() {
@@ -18,6 +31,44 @@ function generateUUID() {
         const v = c == 'x' ? r : (r & 0x3 | 0x8);
         return v.toString(16);
     });
+}
+
+// Imagine Art API 호출 함수
+async function generateImageWithImagine(prompt, options = {}) {
+    try {
+        const { style = 'realistic', aspect_ratio = '1:1', seed = '5' } = options;
+        const formData = new FormData();
+        formData.append('prompt', prompt);
+        formData.append('style', style);
+        formData.append('aspect_ratio', aspect_ratio);
+        formData.append('seed', seed);
+
+        const response = await axios.post(IMAGINE_API_URL, formData, {
+            headers: {
+                'Authorization': IMAGINE_API_KEY,
+                ...formData.getHeaders()
+            },
+            responseType: 'arraybuffer',
+            timeout: 30000
+        });
+
+        // Imagine Art API는 바이너리 이미지를 직접 반환합니다
+        const imageBuffer = Buffer.from(response.data);
+        const base64Image = imageBuffer.toString('base64');
+        const dataUrl = `data:image/jpeg;base64,${base64Image}`;
+        
+        console.log('✅ Imagine Art API 성공: 이미지 생성됨 (바이너리 응답)');
+        return dataUrl;
+        
+    } catch (error) {
+        if (error.response) {
+            console.error('❌ Imagine Art API 응답 오류:', error.response.status, error.response.statusText);
+            throw new Error(`Imagine Art API 오류: ${error.response.status} - ${error.response.statusText}`);
+        } else {
+            console.error('❌ Imagine Art API 오류:', error.message);
+            throw error;
+        }
+    }
 }
 
 // Runware API 호출 함수
@@ -72,6 +123,39 @@ async function generateImageWithRunware(prompt) {
     }
 }
 
+// Hugging Face API 호출 함수
+async function generateImageWithHuggingFace(prompt, token, tokenName) {
+    try {
+
+        const response = await fetch(hfModel.url, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ inputs: prompt }),
+            timeout: hfModel.timeout
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`${tokenName} 응답 오류:`, errorText);
+            throw new Error(`${tokenName} 오류: ${response.status} - ${errorText}`);
+        }
+
+        const blob = await response.blob();
+        const arrayBuffer = await blob.arrayBuffer();
+        const base64 = Buffer.from(arrayBuffer).toString('base64');
+        const dataUrl = `data:image/jpeg;base64,${base64}`;
+        
+        console.log(`✅ ${tokenName} 성공: 이미지 생성됨`);
+        return dataUrl;
+    } catch (error) {
+        console.error(`❌ ${tokenName} 오류:`, error.message);
+        throw error;
+    }
+}
+
 const app = express();
 
 // JSON 요청 본문을 파싱하기 위한 미들웨어
@@ -82,7 +166,7 @@ app.use(express.static(path.join(__dirname, '/')));
 
 // Hugging Face 이미지 생성 API (HF 메인, HF 풀백)
 app.post('/api/generate-image', async (req, res) => {
-    const { prompt } = req.body;
+    const { prompt, style = 'realistic', aspect_ratio = '1:1', seed = '5' } = req.body;
     
     if (!prompt) {
         return res.status(400).json({ error: 'Prompt is required' });
@@ -90,215 +174,123 @@ app.post('/api/generate-image', async (req, res) => {
 
     console.log(`\n=== Image Generation Request ===`);
     console.log(`Prompt: ${prompt}`);
+    console.log(`Style: ${style}, Aspect Ratio: ${aspect_ratio}, Seed: ${seed}`);
     console.log(`Timestamp: ${new Date().toISOString()}`);
 
-    const hfModel = {
-        name: 'FLUX.1-schnell',
-        url: 'https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell',
-        timeout: 60000
-    };
 
-    // 1단계: Runware API 시도
+    // 1. Imagine Art API 시도 (Primary)
+    if (IMAGINE_API_KEY) {
+        console.log(`\n--- Attempting Imagine Art API (Primary) ---`);
+        try {
+            const imageUrl = await generateImageWithImagine(prompt, { style, aspect_ratio, seed });
+            
+            console.log(`✅ SUCCESS with Imagine Art API (Primary)`);
+            console.log(`Generated image URL: ${imageUrl}`);
+            
+            return res.json({
+                success: true,
+                imageUrl: imageUrl,
+                model: 'Imagine Art',
+                source: 'imagine-primary',
+                style: style
+            });
+        } catch (error) {
+            console.log(`❌ Imagine Art API (Primary) ERROR: ${error.message}`);
+        }
+    }
+
+    // 2. Runware API 시도 (Fallback 1)
     if (RUNWARE_API_KEY) {
-        console.log(`\n--- Attempting Runware API (Primary) ---`);
+        console.log(`\n--- Attempting Runware API (Fallback 1) ---`);
         try {
             const imageUrl = await generateImageWithRunware(prompt);
             
-            console.log(`✅ SUCCESS with Runware API (Primary)`);
+            console.log(`✅ SUCCESS with Runware API (Fallback 1)`);
             console.log(`Generated image URL: ${imageUrl}`);
             
             return res.json({
                 success: true,
                 imageUrl: imageUrl,
                 model: 'Runware',
-                source: 'runware-primary'
+                source: 'runware-fallback1'
             });
         } catch (error) {
-            console.log(`❌ Runware API (Primary) ERROR: ${error.message}`);
+            console.log(`❌ Runware API (Fallback 1) ERROR: ${error.message}`);
         }
-    } else {
-        console.log(`\n⚠️ Runware API key not configured, skipping primary...`);
     }
 
-    // 2단계: Hugging Face 기본 토큰 시도
-    console.log(`\n--- Attempting Hugging Face (Primary Token) ---`);
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), hfModel.timeout);
-
-        const response = await fetch(hfModel.url, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${HF_TOKEN_PRIMARY}`,
-                'Content-Type': 'application/json',
-                'x-wait-for-model': 'true'
-            },
-            body: JSON.stringify({
-                inputs: prompt
-            }),
-            signal: controller.signal
-        });
-
-        clearTimeout(timeoutId);
-
-        console.log(`HF Primary Response status: ${response.status}`);
-
-        if (response.ok) {
-            const imageBuffer = await response.arrayBuffer();
+    // 3. Hugging Face Primary Token 시도 (Fallback 2)
+    if (HF_TOKEN_PRIMARY) {
+        console.log(`\n--- Attempting Hugging Face Primary Token (Fallback 2) ---`);
+        try {
+            const imageUrl = await generateImageWithHuggingFace(prompt, HF_TOKEN_PRIMARY, 'HF Primary Token');
             
-            if (imageBuffer.byteLength > 1000) {
-                const base64Image = Buffer.from(imageBuffer).toString('base64');
-                
-                console.log(`✅ SUCCESS with Hugging Face (Primary Token)`);
-                console.log(`Generated image size: ${imageBuffer.byteLength} bytes`);
-                
-                return res.json({
-                    success: true,
-                    imageUrl: `data:image/png;base64,${base64Image}`,
-                    model: hfModel.name,
-                    source: 'primary'
-                });
-            }
-        } else {
-            const errorText = await response.text();
-            console.log(`❌ Hugging Face Primary FAILED: HTTP ${response.status}`);
-            console.log(`Error response: ${errorText}`);
+            console.log(`✅ SUCCESS with Hugging Face Primary Token (Fallback 2)`);
+            console.log(`Generated image URL: ${imageUrl}`);
             
-            // 토큰 한도 초과나 기타 오류 시 풀백으로 진행
-            if (errorText.includes('limit') || errorText.includes('quota') || response.status === 429) {
-                console.log(`🚨 Primary token limit exceeded, switching to fallback token`);
-            }
+            return res.json({
+                success: true,
+                imageUrl: imageUrl,
+                model: hfModel.name,
+                source: 'hf-primary-fallback2'
+            });
+        } catch (error) {
+            console.log(`❌ Hugging Face Primary Token (Fallback 2) ERROR: ${error.message}`);
         }
-    } catch (error) {
-        console.log(`❌ Hugging Face Primary ERROR: ${error.message}`);
     }
 
-    // 3단계: Hugging Face 풀백 토큰 시도
-    console.log(`\n--- Attempting Hugging Face (Fallback Token) ---`);
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), hfModel.timeout);
-
-        const response = await fetch(hfModel.url, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${HF_TOKEN_FALLBACK}`,
-                'Content-Type': 'application/json',
-                'x-wait-for-model': 'true'
-            },
-            body: JSON.stringify({
-                inputs: prompt
-            }),
-            signal: controller.signal
-        });
-
-        clearTimeout(timeoutId);
-
-        console.log(`HF Fallback Response status: ${response.status}`);
-
-        if (response.ok) {
-            const imageBuffer = await response.arrayBuffer();
+    // 4. Hugging Face Fallback Token 시도 (Fallback 3)
+    if (HF_TOKEN_FALLBACK) {
+        console.log(`\n--- Attempting Hugging Face Fallback Token (Fallback 3) ---`);
+        try {
+            const imageUrl = await generateImageWithHuggingFace(prompt, HF_TOKEN_FALLBACK, 'HF Fallback Token');
             
-            if (imageBuffer.byteLength > 1000) {
-                const base64Image = Buffer.from(imageBuffer).toString('base64');
-                
-                console.log(`✅ SUCCESS with Hugging Face (Fallback Token)`);
-                console.log(`Generated image size: ${imageBuffer.byteLength} bytes`);
-                
-                return res.json({
-                    success: true,
-                    imageUrl: `data:image/png;base64,${base64Image}`,
-                    model: hfModel.name,
-                    source: 'fallback'
-                });
-            }
-        } else {
-            const errorText = await response.text();
-            console.log(`❌ Hugging Face Fallback FAILED: HTTP ${response.status}`);
-            console.log(`Error response: ${errorText}`);
+            console.log(`✅ SUCCESS with Hugging Face Fallback Token (Fallback 3)`);
+            console.log(`Generated image URL: ${imageUrl}`);
+            
+            return res.json({
+                success: true,
+                imageUrl: imageUrl,
+                model: hfModel.name,
+                source: 'hf-fallback-fallback3'
+            });
+        } catch (error) {
+            console.log(`❌ Hugging Face Fallback Token (Fallback 3) ERROR: ${error.message}`);
         }
-    } catch (error) {
-        console.log(`❌ Hugging Face Fallback ERROR: ${error.message}`);
     }
 
-    // 4단계: Hugging Face 두 번째 풀백 토큰 시도
-    console.log(`\n--- Attempting Hugging Face (Second Fallback Token) ---`);
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), hfModel.timeout);
-
-        const response = await fetch(hfModel.url, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${HF_TOKEN_FALLBACK2}`,
-                'Content-Type': 'application/json',
-                'x-wait-for-model': 'true'
-            },
-            body: JSON.stringify({
-                inputs: prompt
-            }),
-            signal: controller.signal
-        });
-
-        clearTimeout(timeoutId);
-
-        console.log(`HF Second Fallback Response status: ${response.status}`);
-
-        if (response.ok) {
-            const imageBuffer = await response.arrayBuffer();
+    // 5. Hugging Face Fallback2 Token 시도 (Fallback 4)
+    if (HF_TOKEN_FALLBACK2) {
+        console.log(`\n--- Attempting Hugging Face Fallback2 Token (Fallback 4) ---`);
+        try {
+            const imageUrl = await generateImageWithHuggingFace(prompt, HF_TOKEN_FALLBACK2, 'HF Fallback2 Token');
             
-            if (imageBuffer.byteLength > 1000) {
-                const base64Image = Buffer.from(imageBuffer).toString('base64');
-                
-                console.log(`✅ SUCCESS with Hugging Face (Second Fallback Token)`);
-                console.log(`Generated image size: ${imageBuffer.byteLength} bytes`);
-                
-                return res.json({
-                    success: true,
-                    imageUrl: `data:image/png;base64,${base64Image}`,
-                    model: hfModel.name,
-                    source: 'fallback2'
-                });
-            }
-        } else {
-            const errorText = await response.text();
-            console.log(`❌ Hugging Face Second Fallback FAILED: HTTP ${response.status}`);
-            console.log(`Error response: ${errorText}`);
+            console.log(`✅ SUCCESS with Hugging Face Fallback2 Token (Fallback 4)`);
+            console.log(`Generated image URL: ${imageUrl}`);
+            
+            return res.json({
+                success: true,
+                imageUrl: imageUrl,
+                model: hfModel.name,
+                source: 'hf-fallback2-fallback4'
+            });
+        } catch (error) {
+            console.log(`❌ Hugging Face Fallback2 Token (Fallback 4) ERROR: ${error.message}`);
         }
-    } catch (error) {
-        console.log(`❌ Hugging Face Second Fallback ERROR: ${error.message}`);
     }
 
-    // 5단계: 모든 API 실패 시 플레이스홀더
-    console.log(`\n🔄 All APIs failed, returning placeholder image`);
+    // 6. 최종 Placeholder 이미지 반환 (Final Fallback)
+    console.log(`\n--- Using Placeholder Image (Final Fallback) ---`);
+    const placeholderImage = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgdmlld0JveD0iMCAwIDUxMiA1MTIiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSI1MTIiIGhlaWdodD0iNTEyIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik0yNTYgMjAwQzI3Ny4yIDIwMCAyOTQuNCAyMTcuMiAyOTQuNCAyMzguNEMyOTQuNCAyNTkuNiAyNzcuMiAyNzYuOCAyNTYgMjc2LjhDMjM0LjggMjc2LjggMjE3LjYgMjU5LjYgMjE3LjYgMjM4LjRDMjE3LjYgMjE3LjIgMjM0LjggMjAwIDI1NiAyMDBaIiBmaWxsPSIjOUNBM0FGIi8+CjxwYXRoIGQ9Ik0zNjggMzUySDM1MkwzMjAgMjg4SDI1NkgxOTJMMTYwIDM1MkgxNDRWMzY4SDM2OFYzNTJaIiBmaWxsPSIjOUNBM0FGIi8+Cjx0ZXh0IHg9IjI1NiIgeT0iNDAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmaWxsPSIjNjM3MzgxIiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMTYiPkltYWdlIE5vdCBBdmFpbGFibGU8L3RleHQ+Cjwvc3ZnPgo=';
     
-    const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-        <rect width="100%" height="100%" fill="#4ecdc4"/>
-        <text x="50%" y="35%" font-family="Arial, sans-serif" font-size="24" fill="white" text-anchor="middle" dominant-baseline="middle">
-            AI Character
-        </text>
-        <text x="50%" y="45%" font-family="Arial, sans-serif" font-size="18" fill="white" text-anchor="middle" dominant-baseline="middle">
-            Generation
-        </text>
-        <text x="50%" y="55%" font-family="Arial, sans-serif" font-size="18" fill="white" text-anchor="middle" dominant-baseline="middle">
-            Temporarily Unavailable
-        </text>
-        <text x="50%" y="70%" font-family="Arial, sans-serif" font-size="12" fill="white" text-anchor="middle" dominant-baseline="middle">
-            All 4 APIs failed
-        </text>
-        <text x="50%" y="80%" font-family="Arial, sans-serif" font-size="12" fill="white" text-anchor="middle" dominant-baseline="middle">
-            Using placeholder image
-        </text>
-    </svg>`;
+    console.log(`✅ SUCCESS with Placeholder Image (Final Fallback)`);
     
-    const placeholderBase64 = Buffer.from(placeholderSvg).toString('base64');
-    
-    res.json({
-        success: false,
-        imageUrl: `data:image/svg+xml;base64,${placeholderBase64}`,
+    return res.json({
+        success: true,
+        imageUrl: placeholderImage,
         model: 'Placeholder',
-        source: 'placeholder',
-        message: 'All 4 APIs (Runware + 3 Hugging Face tokens) are temporarily unavailable. Using placeholder image.'
+        source: 'placeholder-final',
+        message: '이미지 생성 API들이 모두 실패하여 플레이스홀더 이미지를 제공합니다.'
     });
 });
 
@@ -310,15 +302,17 @@ if (require.main === module) {
         console.log(`\n🚀 Character Battle Server is running!`);
         console.log(`📍 Local: http://localhost:${PORT}`);
         console.log(`🎮 Game URL: http://localhost:${PORT}`);
+        console.log(`🎨 Imagine Art API: ${IMAGINE_API_KEY ? 'Configured ✅' : 'Missing ❌'}`);
+        console.log(`🚀 Runware API: ${RUNWARE_API_KEY ? 'Configured ✅' : 'Missing ❌'}`);
         console.log(`🤗 Hugging Face Primary: ${HF_TOKEN_PRIMARY ? 'Configured ✅' : 'Missing ❌'}`);
         console.log(`🤗 Hugging Face Fallback: ${HF_TOKEN_FALLBACK ? 'Configured ✅' : 'Missing ❌'}`);
         console.log(`🤗 Hugging Face Fallback2: ${HF_TOKEN_FALLBACK2 ? 'Configured ✅' : 'Missing ❌'}`);
-        console.log(`🚀 Runware API: ${RUNWARE_API_KEY ? 'Configured ✅' : 'Missing ❌'}`);
         console.log(`\n=== API Status ===`);
-        console.log(`Primary: Runware API`);
-        console.log(`Fallback 1: Hugging Face Token 1`);
-        console.log(`Fallback 2: Hugging Face Token 2`);
-        console.log(`Fallback 3: Hugging Face Token 3`);
+        console.log(`Primary: Imagine Art API`);
+        console.log(`Fallback 1: Runware API`);
+        console.log(`Fallback 2: Hugging Face Token 1`);
+        console.log(`Fallback 3: Hugging Face Token 2`);
+        console.log(`Fallback 4: Hugging Face Token 3`);
         console.log(`Final: Placeholder Image`);
         console.log(`\n`);
     });

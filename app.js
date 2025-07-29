@@ -1156,7 +1156,7 @@ generateCharacterBtn.addEventListener('click', async () => {
         parsedData.imageUrl = imageUrl;
         updateProgress(90, '영웅의 초상화 완성!');
 
-        // 3. Save character data to Firebase
+        // 3. Prepare character data for preview
         parsedData.wins = 0;
         parsedData.losses = 0;
         parsedData.owner = currentUser.uid;
@@ -1269,56 +1269,7 @@ function getConceptKeywords(characterConcept) {
     return conceptKeywords;
 }
 
-// 캐릭터 미리보기 표시 함수
-function displayCharacterPreview(characterData) {
-    const characterPreview = document.getElementById('character-preview');
-    const charImagePreview = document.getElementById('char-image-preview');
-    const charStoryPreview = document.getElementById('char-story-preview');
-    const charStatsPreview = document.getElementById('char-stats-preview');
-    
-    if (!characterPreview || !charImagePreview || !charStoryPreview || !charStatsPreview) {
-        console.error('미리보기 요소를 찾을 수 없습니다.');
-        return;
-    }
-    
-    // 이미지 표시
-    charImagePreview.src = characterData.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image';
-    charImagePreview.classList.remove('hidden');
-    
-    // 스토리 표시
-    charStoryPreview.innerHTML = `
-        <p><strong>이름:</strong> ${characterData.name}</p>
-        <p><strong>클래스:</strong> ${characterData.class}</p>
-        <p><strong>성격:</strong> ${characterData.personality}</p>
-        <p><strong>배경 이야기:</strong> ${characterData.story}</p>
-        ${characterData.origin_story ? `<p><strong>탄생 스토리:</strong> ${characterData.origin_story}</p>` : ''}
-    `;
-    
-    // 스킬 표시
-    let skillsHtml = '<div class="skills-section">';
-    
-    if (characterData.attack_skills && characterData.attack_skills.length > 0) {
-        skillsHtml += '<h5>공격 스킬</h5>';
-        characterData.attack_skills.forEach(skill => {
-            skillsHtml += `<div class="skill-item"><strong>${skill.name}:</strong> ${skill.description}</div>`;
-        });
-    }
-    
-    if (characterData.defense_skills && characterData.defense_skills.length > 0) {
-        skillsHtml += '<h5>방어 스킬</h5>';
-        characterData.defense_skills.forEach(skill => {
-            skillsHtml += `<div class="skill-item"><strong>${skill.name}:</strong> ${skill.description}</div>`;
-        });
-    }
-    
-    skillsHtml += '</div>';
-    charStatsPreview.innerHTML = skillsHtml;
-    
-    // 미리보기 섹션 표시
-    characterPreview.classList.remove('hidden');
-    
-    console.log('캐릭터 미리보기 표시 완료:', characterData.name);
-}
+
 
 // ...
 async function generateAndUploadImage(imagePrompt, characterName, characterClass, characterConcept) {
@@ -1346,8 +1297,24 @@ async function saveCharacter(characterData) {
         throw new Error("저장할 캐릭터 데이터 또는 현재 유저 정보가 없습니다.");
     }
     try {
+        // 캐릭터 문서 생성
         const docRef = await addDoc(collection(db, `users/${currentUser.uid}/characters`), characterData);
+        
+        // 신규 캐릭터의 battleHistory 서브컬렉션 초기화 (기존 캐릭터와 동일한 구조 보장)
+        const initialBattleRecord = {
+            isInitialRecord: true,
+            characterId: docRef.id,
+            characterName: characterData.name,
+            createdAt: new Date().toISOString(),
+            note: "캐릭터 생성 시 초기화된 전투 기록 컬렉션"
+        };
+        
+        // battleHistory 서브컬렉션에 초기 문서 추가
+        await addDoc(collection(docRef, 'battleHistory'), initialBattleRecord);
+        
         alert(`${characterData.name}이(가) 당신의 동료가 되었습니다!`);
+        console.log('신규 캐릭터 생성 완료 - battleHistory 서브컬렉션 초기화됨:', docRef.id);
+        
         // 실시간 리스너가 자동으로 UI를 업데이트하므로 추가 작업 불필요
     } catch (error) {
         console.error("캐릭터 저장 오류: ", error);
@@ -2866,6 +2833,10 @@ async function getRecentBattles(characterId) {
         const battles = [];
         querySnapshot.forEach((doc) => {
             const data = doc.data();
+            // 초기화 기록은 제외 (실제 전투 기록만 표시)
+            if (data.isInitialRecord) {
+                return;
+            }
             battles.push({
                 id: doc.id,
                 opponentName: data.opponentName,
@@ -5043,44 +5014,49 @@ function selectSkillForBattle(button) {
     }
 }
 
-// 전투 기록 저장 함수
+// 전투 기록 저장 함수 (최적화됨 - 문서 크기 제한 해결)
 async function saveBattleRecord(winnerData, loserData, battleData) {
     try {
+        // 스킬 정보를 간소화 (이름만 저장)
+        const simplifySkills = (skills) => {
+            if (!skills || !Array.isArray(skills)) return [];
+            return skills.map(skill => {
+                if (typeof skill === 'string') return skill;
+                return skill.name || skill;
+            });
+        };
+        
+        // 기본 전투 기록 (battles 컬렉션용 - 최소한의 정보만)
         const battleRecord = {
             winnerId: winnerData.id,
             winnerName: winnerData.name,
-            winnerImage: winnerData.imageUrl,
             loserId: loserData.id,
             loserName: loserData.name,
-            loserImage: loserData.imageUrl,
             battleDate: new Date().toISOString(),
-            playerSkills: battleData.playerSkills || [],
-            opponentSkills: battleData.opponentSkills || [],
+            playerSkills: simplifySkills(battleData.playerSkills),
+            opponentSkills: simplifySkills(battleData.opponentSkills),
             createdAt: new Date().toISOString()
         };
         
-        // 승자의 전투 기록 저장
+        // 승자의 전투 기록 (개별 battleHistory용)
         const winnerBattleRecord = {
             ...battleRecord,
             result: 'win',
             opponentId: loserData.id,
             opponentName: loserData.name,
-            opponentImage: loserData.imageUrl
+            opponentImage: loserData.imageUrl || null
         };
         
-        // 패자의 전투 기록 저장
+        // 패자의 전투 기록 (개별 battleHistory용)
         const loserBattleRecord = {
             ...battleRecord,
             result: 'lose',
             opponentId: winnerData.id,
             opponentName: winnerData.name,
-            opponentImage: winnerData.imageUrl
+            opponentImage: winnerData.imageUrl || null
         };
         
-        // 전투 기록을 battles 컬렉션에 저장
-        await addDoc(collection(db, 'battles'), battleRecord);
-        
-        // 각 캐릭터의 개별 전투 기록도 저장
+        // 각 캐릭터의 개별 전투 기록만 저장 (battles 컬렉션 제거로 크기 문제 해결)
         const winnerRef = await findCharacterRef(winnerData.id);
         const loserRef = await findCharacterRef(loserData.id);
         
@@ -5207,9 +5183,8 @@ async function processIndividualOperation(operation) {
     try {
         switch (operation.type) {
             case 'BATTLE_RECORD':
-                const battleRef = doc(collection(db, 'battles'));
-                await setDoc(battleRef, operation.data);
-                console.log('📊 전투 기록 개별 저장 완료');
+                // battles 컬렉션 저장 제거 (문서 크기 제한 문제 해결)
+                console.log('📊 전투 기록은 개별 캐릭터 battleHistory에만 저장됩니다');
                 break;
             case 'SKILL_UPDATE':
                 if (operation.ref && operation.data && Object.keys(operation.data).length > 0) {
@@ -5284,32 +5259,12 @@ async function processBatchByType(type, operations) {
     }
 }
 
-// 전투 기록 배치 처리
+// 전투 기록 배치 처리 (battles 컬렉션 저장 제거)
 async function processBattleRecordBatch(operations) {
     try {
-        const batch = writeBatch(db);
-        
-        operations.forEach(op => {
-            // 데이터 유효성 검사
-            if (!op.data || typeof op.data !== 'object') {
-                console.error('❌ 유효하지 않은 전투 기록 데이터:', op.data);
-                return;
-            }
-            
-            // 필드 값 검증
-            const cleanData = {};
-            for (const [key, value] of Object.entries(op.data)) {
-                if (value !== undefined && value !== null) {
-                    cleanData[key] = value;
-                }
-            }
-            
-            const battleRef = doc(collection(db, 'battles'));
-            batch.set(battleRef, cleanData);
-        });
-        
-        await batch.commit();
-        console.log(`📊 전투 기록 배치 저장 완료: ${operations.length}개`);
+        // battles 컬렉션 저장 제거 (문서 크기 제한 문제 해결)
+        // 전투 기록은 개별 캐릭터의 battleHistory 서브컬렉션에만 저장됩니다
+        console.log(`📊 전투 기록 배치 처리 스킵: ${operations.length}개 (개별 캐릭터 기록만 사용)`);
     } catch (error) {
         console.error('❌ 전투 기록 배치 처리 오류:', error);
         // 개별 저장으로 폴백
@@ -5926,22 +5881,8 @@ async function updateCharacterStats(winner, loser) {
             opponentSkills: window.lastBattleData?.opponentSkills || []
         };
         
-        // 전투 기록을 배치에 추가
-        addToBatch({
-            type: 'BATTLE_RECORD',
-            data: {
-                winnerId: winnerId,
-                winnerName: winner.name,
-                winnerImage: winner.imageUrl || winner.image_url || winner.image,
-                loserId: loserId,
-                loserName: loser.name,
-                loserImage: loser.imageUrl || loser.image_url || loser.image,
-                battleDate: new Date().toISOString(),
-                playerSkills: battleData.playerSkills,
-                opponentSkills: battleData.opponentSkills,
-                createdAt: new Date().toISOString()
-            }
-        });
+        // 전투 기록 배치 추가 제거 (battles 컬렉션 저장 안함)
+        // 전투 기록은 saveBattleRecord 함수에서 개별 캐릭터 battleHistory에만 저장됩니다
         
         console.log('🚀 배치 처리로 승패 업데이트 시작');
         await updateWinsLossesBatch(winnerId, loserId);
