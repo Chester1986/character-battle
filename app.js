@@ -95,6 +95,346 @@ let allCharactersUnsubscribe = null;
 let userCharactersUnsubscribe = null;
 let isRealTimeInitialized = false;
 
+// ------------------------------------------------------------------
+// 스토리 캐시 및 디테일 추적 시스템
+// ------------------------------------------------------------------
+
+// 스토리 캐시 클래스 - Firebase 읽기/쓰기 최적화
+class StoryCache {
+    constructor() {
+        this.cache = new Map();
+        this.detailsCache = new Map();
+        this.lastSync = 0;
+        this.pendingUpdates = new Map();
+        this.SYNC_INTERVAL = 300000; // 5분
+    }
+    
+    // 캐시에서 페이지 데이터 가져오기
+    get(pageNumber) {
+        return this.cache.get(pageNumber);
+    }
+    
+    // 캐시에 페이지 데이터 저장
+    set(pageNumber, pageData) {
+        this.cache.set(pageNumber, pageData);
+    }
+    
+    // 캐시에서 페이지 데이터 삭제
+    delete(pageNumber) {
+        return this.cache.delete(pageNumber);
+    }
+    
+    // 스토리 디테일 가져오기 (캐싱 적용)
+    async getDetails(storyId) {
+        if (Date.now() - this.lastSync > this.SYNC_INTERVAL) {
+            await this.syncDetailsWithFirebase(storyId);
+        }
+        return this.detailsCache.get(storyId) || this.getDefaultDetails();
+    }
+    
+    // 로컬 디테일 업데이트
+    updateDetailsLocal(storyId, updates) {
+        const current = this.detailsCache.get(storyId) || this.getDefaultDetails();
+        const updated = this.mergeDetails(current, updates);
+        this.detailsCache.set(storyId, updated);
+        
+        // 대기 중인 업데이트에 추가
+        const pending = this.pendingUpdates.get(storyId) || this.getDefaultDetails();
+        this.pendingUpdates.set(storyId, this.mergeDetails(pending, updates));
+    }
+    
+    // Firebase와 디테일 동기화
+    async syncDetailsWithFirebase(storyId) {
+        try {
+            const detailsRef = doc(db, 'story_details', storyId);
+            const detailsDoc = await getDoc(detailsRef);
+            
+            if (detailsDoc.exists()) {
+                this.detailsCache.set(storyId, detailsDoc.data());
+            } else {
+                this.detailsCache.set(storyId, this.getDefaultDetails());
+            }
+            
+            this.lastSync = Date.now();
+        } catch (error) {
+            console.error('디테일 동기화 오류:', error);
+        }
+    }
+    
+    // Firebase에 디테일 저장 (배치 처리)
+    async saveDetailsToFirebase(storyId) {
+        try {
+            const pending = this.pendingUpdates.get(storyId);
+            if (!pending) return;
+            
+            const detailsRef = doc(db, 'story_details', storyId);
+            await setDoc(detailsRef, pending, { merge: true });
+            
+            // 대기 중인 업데이트 클리어
+            this.pendingUpdates.delete(storyId);
+            
+            console.log('스토리 디테일 저장 완료');
+        } catch (error) {
+            console.error('디테일 저장 오류:', error);
+            throw error;
+        }
+    }
+    
+    // 기본 디테일 구조
+    getDefaultDetails() {
+        return {
+            characters: {},
+            situations: {
+                current: '',
+                location: '',
+                activeEvents: []
+            },
+            promises: [],
+            relationships: {},
+            items: {},
+            lastUpdated: new Date().toISOString()
+        };
+    }
+    
+    // 디테일 병합
+    mergeDetails(current, updates) {
+        const merged = JSON.parse(JSON.stringify(current));
+        
+        // 캐릭터 정보 병합
+        if (updates.characters) {
+            Object.keys(updates.characters).forEach(charId => {
+                if (!merged.characters[charId]) {
+                    merged.characters[charId] = {};
+                }
+                Object.assign(merged.characters[charId], updates.characters[charId]);
+            });
+        }
+        
+        // 상황 정보 병합
+        if (updates.situations) {
+            Object.assign(merged.situations, updates.situations);
+        }
+        
+        // 약속 추가
+        if (updates.promises) {
+            merged.promises = [...merged.promises, ...updates.promises];
+        }
+        
+        // 관계 정보 병합
+        if (updates.relationships) {
+            Object.assign(merged.relationships, updates.relationships);
+        }
+        
+        // 아이템 정보 병합
+        if (updates.items) {
+            Object.assign(merged.items, updates.items);
+        }
+        
+        merged.lastUpdated = new Date().toISOString();
+        return merged;
+    }
+}
+
+// 디테일 추출기 클래스
+class DetailExtractor {
+    constructor() {
+        this.keywords = {
+            promises: ['약속', '만나자', '기다리', '나중에', '다음에', '후에'],
+            items: ['받았다', '얻었다', '주었다', '가지고', '소지', '장비'],
+            injuries: ['다쳤다', '부상', '상처', '아프다', '피'],
+            emotions: ['화나', '기쁘', '슬프', '놀라', '무서', '걱정'],
+            relationships: ['친구', '적', '동료', '연인', '가족', '스승'],
+            locations: ['도착', '떠나', '이동', '향해', '에서', '으로'],
+            battles: ['전투', '싸움', '공격', '방어', '승리', '패배']
+        };
+    }
+    
+    // 생성된 내용에서 디테일 추출
+    extractFromContent(content, appearingCharacters) {
+        const cleanContent = content.replace(/<[^>]*>/g, '').trim();
+        const sentences = cleanContent.split(/[.!?]/).filter(s => s.trim().length > 5);
+        
+        const details = {
+            characters: {},
+            situations: {},
+            promises: [],
+            relationships: {},
+            items: {}
+        };
+        
+        // 등장 캐릭터들의 상태 업데이트
+        appearingCharacters.forEach(char => {
+            details.characters[char.id] = {
+                lastAppeared: Date.now(),
+                currentState: this.extractCharacterState(cleanContent, char.name),
+                emotions: this.extractEmotions(cleanContent, char.name)
+            };
+        });
+        
+        // 상황 정보 추출
+        details.situations = {
+            current: this.extractCurrentSituation(cleanContent),
+            location: this.extractLocation(cleanContent),
+            activeEvents: this.extractActiveEvents(cleanContent)
+        };
+        
+        // 약속 추출
+        details.promises = this.extractPromises(cleanContent);
+        
+        // 관계 변화 추출
+        details.relationships = this.extractRelationshipChanges(cleanContent, appearingCharacters);
+        
+        // 아이템 변화 추출
+        details.items = this.extractItemChanges(cleanContent);
+        
+        return details;
+    }
+    
+    // 캐릭터 상태 추출
+    extractCharacterState(content, characterName) {
+        const states = [];
+        
+        // 부상 상태 확인
+        this.keywords.injuries.forEach(keyword => {
+            if (content.includes(characterName) && content.includes(keyword)) {
+                states.push(`부상: ${keyword}`);
+            }
+        });
+        
+        // 전투 상태 확인
+        this.keywords.battles.forEach(keyword => {
+            if (content.includes(characterName) && content.includes(keyword)) {
+                states.push(`전투: ${keyword}`);
+            }
+        });
+        
+        return states.join(', ');
+    }
+    
+    // 감정 상태 추출
+    extractEmotions(content, characterName) {
+        const emotions = [];
+        
+        this.keywords.emotions.forEach(keyword => {
+            if (content.includes(characterName) && content.includes(keyword)) {
+                emotions.push(keyword);
+            }
+        });
+        
+        return emotions;
+    }
+    
+    // 현재 상황 추출
+    extractCurrentSituation(content) {
+        const sentences = content.split(/[.!?]/);
+        const lastSentences = sentences.slice(-3).join('. ');
+        return lastSentences.slice(0, 200);
+    }
+    
+    // 위치 정보 추출
+    extractLocation(content) {
+        const locationKeywords = ['성', '마을', '숲', '산', '강', '바다', '동굴', '탑', '궁전'];
+        
+        for (const keyword of locationKeywords) {
+            if (content.includes(keyword)) {
+                const sentences = content.split(/[.!?]/);
+                for (const sentence of sentences) {
+                    if (sentence.includes(keyword)) {
+                        return sentence.trim().slice(0, 100);
+                    }
+                }
+            }
+        }
+        
+        return '';
+    }
+    
+    // 활성 이벤트 추출
+    extractActiveEvents(content) {
+        const events = [];
+        const eventKeywords = ['전투', '모험', '탐험', '의식', '회의', '축제', '여행'];
+        
+        eventKeywords.forEach(keyword => {
+            if (content.includes(keyword)) {
+                events.push(keyword);
+            }
+        });
+        
+        return events;
+    }
+    
+    // 약속 추출
+    extractPromises(content) {
+        const promises = [];
+        const sentences = content.split(/[.!?]/);
+        
+        sentences.forEach(sentence => {
+            this.keywords.promises.forEach(keyword => {
+                if (sentence.includes(keyword)) {
+                    promises.push({
+                        content: sentence.trim(),
+                        createdAt: new Date().toISOString(),
+                        status: 'pending'
+                    });
+                }
+            });
+        });
+        
+        return promises;
+    }
+    
+    // 관계 변화 추출
+    extractRelationshipChanges(content, characters) {
+        const changes = {};
+        
+        // 캐릭터 간 관계 키워드 확인
+        for (let i = 0; i < characters.length; i++) {
+            for (let j = i + 1; j < characters.length; j++) {
+                const char1 = characters[i].name;
+                const char2 = characters[j].name;
+                
+                this.keywords.relationships.forEach(keyword => {
+                    if (content.includes(char1) && content.includes(char2) && content.includes(keyword)) {
+                        const key = `${char1}-${char2}`;
+                        changes[key] = keyword;
+                    }
+                });
+            }
+        }
+        
+        return changes;
+    }
+    
+    // 아이템 변화 추출
+    extractItemChanges(content) {
+        const items = {};
+        const sentences = content.split(/[.!?]/);
+        
+        sentences.forEach(sentence => {
+            this.keywords.items.forEach(keyword => {
+                if (sentence.includes(keyword)) {
+                    // 간단한 아이템 추출 (더 정교한 로직 필요시 개선)
+                    const words = sentence.split(' ');
+                    const keywordIndex = words.findIndex(word => word.includes(keyword));
+                    if (keywordIndex > 0) {
+                        const itemName = words[keywordIndex - 1];
+                        items[itemName] = {
+                            action: keyword,
+                            context: sentence.trim()
+                        };
+                    }
+                }
+            });
+        });
+        
+        return items;
+    }
+}
+
+// 전역 인스턴스 생성
+const storyCache = new StoryCache();
+const detailExtractor = new DetailExtractor();
+
 // --- DOM ELEMENTS ---
 const authSection = document.getElementById('auth-section');
 const idInput = document.getElementById('id-input');
@@ -323,31 +663,39 @@ async function generateWithFallback(prompt, maxRetriesPerModel = 2) {
 // 기존 함수명과의 호환성을 위한 별칭
 const generateWithRetry = generateWithFallback;
 
-// --- CACHING SYSTEM ---
-let characterCache = new Map();
-let cacheTimestamps = new Map();
-const CACHE_DURATION = 5 * 60 * 1000; // 5분 캐시
+// --- LEGACY CACHING SYSTEM (통합됨) ---
+// 기존 캐시 시스템은 새로운 스마트 캐시 시스템으로 대체됨
 let lastRankingUpdate = 0;
 const RANKING_UPDATE_INTERVAL = 5 * 60 * 1000; // 5분마다 랭킹 업데이트
 
-// 캐시 유효성 검사
-function isCacheValid(key) {
-    const timestamp = cacheTimestamps.get(key);
-    return timestamp && (Date.now() - timestamp) < CACHE_DURATION;
-}
-
-// 캐시에서 캐릭터 데이터 가져오기
+// 레거시 함수들 (호환성 유지)
 function getCachedCharacter(characterId) {
-    if (isCacheValid(characterId)) {
-        return characterCache.get(characterId);
+    const cacheKey = `char_${characterId}`;
+    
+    // 캐시에서 직접 확인
+    if (isCacheValid(cacheKey, CACHE_DURATION.CHARACTER_DATA)) {
+        const cachedData = characterDataCache.get(cacheKey);
+        if (cachedData) {
+            return cachedData;
+        }
     }
+    
+    // 실시간 풀에서 확인
+    if (allCharactersPool && allCharactersPool.length > 0) {
+        const poolData = allCharactersPool.find(char => char.id === characterId);
+        if (poolData) {
+            setCache(cacheKey, poolData, 'CHARACTER_DATA');
+            return poolData;
+        }
+    }
+    
     return null;
 }
 
-// 캐시에 캐릭터 데이터 저장
 function setCachedCharacter(characterId, data) {
-    characterCache.set(characterId, data);
-    cacheTimestamps.set(characterId, Date.now());
+    if (typeof setCache === 'function') {
+        setCache(`char_${characterId}`, data, 'CHARACTER_DATA');
+    }
 }
 
 // --- OPTIMIZED REAL-TIME LISTENERS ---
@@ -1703,7 +2051,7 @@ async function startBattleFromDetail(characterId) {
                 let cachedOpponent = getCachedCharacter(randomOpponent.id);
                 
                 if (cachedOpponent) {
-                    console.log('✅ 캐시에서 상대방 데이터 사용:', cachedOpponent.name);
+                    console.log('✅ 캐시에서 상대방 데이터 사용:', cachedOpponent.name || 'Unknown');
                     opponentCharacterForBattle = cachedOpponent;
                 } else {
                     console.log('🔄 캐시 없음, Firebase에서 상대방 데이터 가져오는 중');
@@ -1756,6 +2104,21 @@ function showMatchingScreen() {
     // 페이지 상단으로 스크롤
     window.scrollTo(0, 0);
     
+    // opponentCharacterForBattle이 없는 경우 처리
+    if (!opponentCharacterForBattle) {
+        console.error('매칭된 상대방 정보가 없습니다.');
+        matchingContent.innerHTML = `
+            <div class="matching-container">
+                <div class="error-message">
+                    <h3>⚠️ 매칭 오류</h3>
+                    <p>상대방 정보를 불러올 수 없습니다.</p>
+                    <button onclick="showView('character-cards')" class="back-btn">돌아가기</button>
+                </div>
+            </div>
+        `;
+        return;
+    }
+    
     matchingContent.innerHTML = `
         <div class="matching-container">
             <!-- 상대방 캐릭터 정보 -->
@@ -1763,9 +2126,9 @@ function showMatchingScreen() {
                 <h3>매칭된 상대</h3>
                 <div class="opponent-card" onclick="showOpponentDetails()">
                     <img src="${opponentCharacterForBattle.imageUrl || 'https://placehold.co/200x200/333/FFF?text=?'}" 
-                         alt="${opponentCharacterForBattle.name}" class="opponent-image">
+                         alt="${opponentCharacterForBattle.name || 'Unknown'}" class="opponent-image">
                     <div class="opponent-info">
-                        <h4>${opponentCharacterForBattle.name}</h4>
+                        <h4>${opponentCharacterForBattle.name || 'Unknown Character'}</h4>
                         <p class="opponent-class">${opponentCharacterForBattle.class || '정보 없음'}</p>
                         <div class="opponent-stats">
                             <span>승률: ${calculateWinRate(opponentCharacterForBattle)}%</span>
@@ -4790,12 +5153,540 @@ async function updateWinsLosses(winnerId, loserId) {
 }
 
 // 캐릭터 참조 캐시
-let characterRefCache = new Map();
+// 🚀 스마트 캐시 시스템
+let characterRefCache = new Map(); // 캐릭터 참조 캐시
+let characterDataCache = new Map(); // 캐릭터 데이터 캐시 (새로 추가)
+let cacheTimestamps = new Map(); // 캐시 타임스탬프
+let pendingRequests = new Map(); // 중복 요청 방지
+
+// 캐시 설정
+const CACHE_DURATION = {
+    CHARACTER_DATA: 5 * 60 * 1000, // 캐릭터 기본 정보: 5분
+    SKILL_DATA: 1 * 60 * 1000,     // 스킬 정보: 1분
+    RANKING_DATA: 30 * 1000,       // 랭킹: 30초
+    BATTLE_STATS: 0                // 승패 기록: 실시간
+};
+
+// 캐시 유효성 검사
+function isCacheValid(key, duration) {
+    const timestamp = cacheTimestamps.get(key);
+    if (!timestamp) return false;
+    return (Date.now() - timestamp) < duration;
+}
+
+// 캐시 저장
+function setCache(key, data, type = 'CHARACTER_DATA') {
+    characterDataCache.set(key, data);
+    cacheTimestamps.set(key, Date.now());
+    console.log(`💾 캐시 저장: ${key} (${type})`);
+}
+
+// 캐시 삭제
+function clearCache(key) {
+    characterDataCache.delete(key);
+    cacheTimestamps.delete(key);
+    characterRefCache.delete(key);
+    console.log(`🗑️ 캐시 삭제: ${key}`);
+}
+
+// 🚀 배치 처리 시스템
+let batchQueue = [];
+let batchTimer = null;
+const BATCH_DELAY = 10000; // 10초마다 배치 처리
+
+// 배치에 작업 추가
+function addToBatch(operation) {
+    // Firebase 할당량 문제로 인해 배치 처리를 일시적으로 비활성화
+    // 대신 즉시 개별 처리
+    console.log(`🔄 개별 처리로 전환: ${operation.type}`);
+    processIndividualOperation(operation);
+}
+
+// 개별 작업 처리 함수
+async function processIndividualOperation(operation) {
+    try {
+        switch (operation.type) {
+            case 'BATTLE_RECORD':
+                const battleRef = doc(collection(db, 'battles'));
+                await setDoc(battleRef, operation.data);
+                console.log('📊 전투 기록 개별 저장 완료');
+                break;
+            case 'SKILL_UPDATE':
+                if (operation.ref && operation.data && Object.keys(operation.data).length > 0) {
+                    await updateDoc(operation.ref, operation.data);
+                    console.log('⚔️ 스킬 개별 업데이트 완료');
+                }
+                break;
+            case 'STATS_UPDATE':
+                if (operation.ref && operation.data && Object.keys(operation.data).length > 0) {
+                    await updateDoc(operation.ref, operation.data);
+                    console.log('📈 통계 개별 업데이트 완료');
+                }
+                break;
+        }
+    } catch (error) {
+        console.error(`❌ ${operation.type} 개별 처리 실패:`, error);
+        // 오프라인 저장으로 폴백
+        if (!isOnline()) {
+            saveOfflineAction({
+                type: 'batch_operation',
+                operation: operation,
+                timestamp: new Date().toISOString()
+            });
+        }
+    }
+}
+
+// 배치 처리 실행
+async function processBatch() {
+    if (batchQueue.length === 0) {
+        batchTimer = null;
+        return;
+    }
+    
+    console.log(`🚀 배치 처리 시작: ${batchQueue.length}개 작업`);
+    const currentBatch = [...batchQueue];
+    batchQueue = [];
+    batchTimer = null;
+    
+    // 타입별로 그룹화
+    const groupedOps = currentBatch.reduce((groups, op) => {
+        if (!groups[op.type]) groups[op.type] = [];
+        groups[op.type].push(op);
+        return groups;
+    }, {});
+    
+    // 각 타입별로 배치 처리
+    for (const [type, operations] of Object.entries(groupedOps)) {
+        try {
+            await processBatchByType(type, operations);
+            console.log(`✅ ${type} 배치 처리 완료: ${operations.length}개`);
+        } catch (error) {
+            console.error(`❌ ${type} 배치 처리 실패:`, error);
+        }
+    }
+}
+
+// 타입별 배치 처리
+async function processBatchByType(type, operations) {
+    switch (type) {
+        case 'BATTLE_RECORD':
+            await processBattleRecordBatch(operations);
+            break;
+        case 'SKILL_UPDATE':
+            await processSkillUpdateBatch(operations);
+            break;
+        case 'STATS_UPDATE':
+            await processStatsUpdateBatch(operations);
+            break;
+        default:
+            console.warn(`알 수 없는 배치 타입: ${type}`);
+    }
+}
+
+// 전투 기록 배치 처리
+async function processBattleRecordBatch(operations) {
+    try {
+        const batch = writeBatch(db);
+        
+        operations.forEach(op => {
+            // 데이터 유효성 검사
+            if (!op.data || typeof op.data !== 'object') {
+                console.error('❌ 유효하지 않은 전투 기록 데이터:', op.data);
+                return;
+            }
+            
+            // 필드 값 검증
+            const cleanData = {};
+            for (const [key, value] of Object.entries(op.data)) {
+                if (value !== undefined && value !== null) {
+                    cleanData[key] = value;
+                }
+            }
+            
+            const battleRef = doc(collection(db, 'battles'));
+            batch.set(battleRef, cleanData);
+        });
+        
+        await batch.commit();
+        console.log(`📊 전투 기록 배치 저장 완료: ${operations.length}개`);
+    } catch (error) {
+        console.error('❌ 전투 기록 배치 처리 오류:', error);
+        // 개별 저장으로 폴백
+        for (const op of operations) {
+            try {
+                const battleRef = doc(collection(db, 'battles'));
+                await setDoc(battleRef, op.data);
+            } catch (individualError) {
+                console.error('❌ 개별 전투 기록 저장 실패:', individualError);
+            }
+        }
+    }
+}
+
+// 스킬 업데이트 배치 처리
+async function processSkillUpdateBatch(operations) {
+    try {
+        const batch = writeBatch(db);
+        
+        operations.forEach(op => {
+            // 참조와 데이터 유효성 검사
+            if (!op.ref || !op.data || typeof op.data !== 'object') {
+                console.error('❌ 유효하지 않은 스킬 업데이트 데이터:', op);
+                return;
+            }
+            
+            // 필드 값 검증
+            const cleanData = {};
+            for (const [key, value] of Object.entries(op.data)) {
+                if (value !== undefined && value !== null) {
+                    cleanData[key] = value;
+                }
+            }
+            
+            if (Object.keys(cleanData).length > 0) {
+                batch.update(op.ref, cleanData);
+            }
+        });
+        
+        await batch.commit();
+        console.log(`⚔️ 스킬 업데이트 배치 완료: ${operations.length}개`);
+    } catch (error) {
+        console.error('❌ 스킬 업데이트 배치 처리 오류:', error);
+        // 개별 업데이트로 폴백
+        for (const op of operations) {
+            try {
+                if (op.ref && op.data) {
+                    await updateDoc(op.ref, op.data);
+                }
+            } catch (individualError) {
+                console.error('❌ 개별 스킬 업데이트 실패:', individualError);
+            }
+        }
+    }
+}
+
+// 통계 업데이트 배치 처리
+async function processStatsUpdateBatch(operations) {
+    try {
+        const batch = writeBatch(db);
+        
+        operations.forEach(op => {
+            // 참조와 데이터 유효성 검사
+            if (!op.ref || !op.data || typeof op.data !== 'object') {
+                console.error('❌ 유효하지 않은 통계 업데이트 데이터:', op);
+                return;
+            }
+            
+            // 필드 값 검증
+            const cleanData = {};
+            for (const [key, value] of Object.entries(op.data)) {
+                if (value !== undefined && value !== null) {
+                    cleanData[key] = value;
+                }
+            }
+            
+            if (Object.keys(cleanData).length > 0) {
+                batch.update(op.ref, cleanData);
+            }
+        });
+        
+        await batch.commit();
+        console.log(`📈 통계 업데이트 배치 완료: ${operations.length}개`);
+    } catch (error) {
+        console.error('❌ 통계 업데이트 배치 처리 오류:', error);
+        // 개별 업데이트로 폴백
+        for (const op of operations) {
+            try {
+                if (op.ref && op.data) {
+                    await updateDoc(op.ref, op.data);
+                }
+            } catch (individualError) {
+                console.error('❌ 개별 통계 업데이트 실패:', individualError);
+            }
+        }
+    }
+}
+
+// 승패 업데이트 (배치 처리 버전)
+async function updateWinsLossesBatch(winnerId, loserId) {
+    try {
+        // 오프라인 상태 확인
+        if (!isOnline()) {
+            console.log('📱 오프라인 상태: 전투 결과를 로컬에 저장');
+            saveOfflineAction({
+                type: 'BATTLE_RESULT',
+                winnerId: winnerId,
+                loserId: loserId
+            });
+            return;
+        }
+        
+        // 캐릭터 참조 찾기
+        const winnerRef = await findCharacterRef(winnerId);
+        const loserRef = await findCharacterRef(loserId);
+        
+        if (!winnerRef || !loserRef) {
+            console.error('캐릭터 참조를 찾을 수 없습니다');
+            // 오프라인 액션으로 저장
+            saveOfflineAction({
+                type: 'BATTLE_RESULT',
+                winnerId: winnerId,
+                loserId: loserId
+            });
+            return;
+        }
+        
+        // 캐시에서 현재 데이터 확인
+        let winnerData = characterDataCache.get(winnerId);
+        let loserData = characterDataCache.get(loserId);
+        
+        // 캐시에 없거나 만료된 경우 Firebase에서 가져오기
+        if (!winnerData || !isCacheValid(winnerId, 'battle')) {
+            const winnerDoc = await getDoc(winnerRef);
+            if (winnerDoc.exists()) {
+                winnerData = winnerDoc.data();
+                setCache(winnerId, winnerData, 'battle');
+            }
+        }
+        
+        if (!loserData || !isCacheValid(loserId, 'battle')) {
+            const loserDoc = await getDoc(loserRef);
+            if (loserDoc.exists()) {
+                loserData = loserDoc.data();
+                setCache(loserId, loserData, 'battle');
+            }
+        }
+        
+        // 승패 통계 계산
+        const winnerWins = (winnerData.wins || 0) + 1;
+        const winnerLosses = winnerData.losses || 0;
+        const loserWins = loserData.wins || 0;
+        const loserLosses = (loserData.losses || 0) + 1;
+        
+        // 캐시 업데이트
+        const updatedWinnerData = { ...winnerData, wins: winnerWins, losses: winnerLosses };
+        const updatedLoserData = { ...loserData, wins: loserWins, losses: loserLosses };
+        setCache(winnerId, updatedWinnerData, 'battle');
+        setCache(loserId, updatedLoserData, 'battle');
+        
+        // 배치에 추가
+        addToBatch({
+            type: 'STATS_UPDATE',
+            ref: winnerRef,
+            data: { wins: winnerWins, losses: winnerLosses }
+        });
+        
+        addToBatch({
+            type: 'STATS_UPDATE',
+            ref: loserRef,
+            data: { wins: loserWins, losses: loserLosses }
+        });
+        
+        console.log(`📊 승패 통계 배치 큐에 추가: 승자 ${winnerWins}승 ${winnerLosses}패, 패자 ${loserWins}승 ${loserLosses}패`);
+        
+    } catch (error) {
+        console.error('배치 승패 업데이트 실패:', error);
+    }
+}
+
+// 🔄 오프라인 백업 시스템
+const OFFLINE_STORAGE_KEY = 'character_battle_offline_data';
+const OFFLINE_ACTIONS_KEY = 'character_battle_offline_actions';
+
+// 오프라인 데이터 저장
+function saveToOfflineStorage(key, data) {
+    try {
+        const offlineData = JSON.parse(localStorage.getItem(OFFLINE_STORAGE_KEY) || '{}');
+        offlineData[key] = {
+            data: data,
+            timestamp: Date.now()
+        };
+        localStorage.setItem(OFFLINE_STORAGE_KEY, JSON.stringify(offlineData));
+        console.log(`💾 오프라인 저장: ${key}`);
+    } catch (error) {
+        console.error('오프라인 저장 실패:', error);
+    }
+}
+
+// 오프라인 데이터 불러오기
+function loadFromOfflineStorage(key) {
+    try {
+        const offlineData = JSON.parse(localStorage.getItem(OFFLINE_STORAGE_KEY) || '{}');
+        const item = offlineData[key];
+        if (item && (Date.now() - item.timestamp) < 300000) { // 5분 이내
+            console.log(`📱 오프라인에서 불러옴: ${key}`);
+            return item.data;
+        }
+        return null;
+    } catch (error) {
+        console.error('오프라인 불러오기 실패:', error);
+        return null;
+    }
+}
+
+// 오프라인 액션 저장
+function saveOfflineAction(action) {
+    try {
+        const actions = JSON.parse(localStorage.getItem(OFFLINE_ACTIONS_KEY) || '[]');
+        actions.push({
+            ...action,
+            timestamp: Date.now(),
+            id: Date.now() + Math.random()
+        });
+        localStorage.setItem(OFFLINE_ACTIONS_KEY, JSON.stringify(actions));
+        console.log(`📝 오프라인 액션 저장: ${action.type}`);
+    } catch (error) {
+        console.error('오프라인 액션 저장 실패:', error);
+    }
+}
+
+// 오프라인 액션 동기화
+async function syncOfflineActions() {
+    try {
+        const actions = JSON.parse(localStorage.getItem(OFFLINE_ACTIONS_KEY) || '[]');
+        if (actions.length === 0) return;
+        
+        console.log(`🔄 오프라인 액션 동기화 시작: ${actions.length}개`);
+        
+        for (const action of actions) {
+            try {
+                switch (action.type) {
+                    case 'BATTLE_RESULT':
+                        await updateWinsLossesBatch(action.winnerId, action.loserId);
+                        break;
+                    case 'SKILL_UPDATE':
+                        await saveLastUsedSkills(action.characterId, action.skills);
+                        break;
+                    default:
+                        console.warn(`알 수 없는 오프라인 액션: ${action.type}`);
+                }
+            } catch (error) {
+                console.error(`오프라인 액션 동기화 실패: ${action.type}`, error);
+            }
+        }
+        
+        // 동기화 완료 후 오프라인 액션 삭제
+        localStorage.removeItem(OFFLINE_ACTIONS_KEY);
+        console.log('✅ 오프라인 액션 동기화 완료');
+        
+    } catch (error) {
+        console.error('오프라인 동기화 실패:', error);
+    }
+}
+
+// 네트워크 상태 확인
+function isOnline() {
+    return navigator.onLine;
+}
+
+// 온라인 상태 변경 감지
+window.addEventListener('online', () => {
+    console.log('🌐 온라인 상태로 변경됨');
+    syncOfflineActions();
+});
+
+window.addEventListener('offline', () => {
+    console.log('📱 오프라인 상태로 변경됨');
+});
+
+// 🚀 스마트 캐릭터 데이터 로딩 (중복 요청 방지 + 캐시)
+async function getCharacterDataSmart(characterId, forceRefresh = false) {
+    try {
+        const cacheKey = `char_${characterId}`;
+        
+        // 진행 중인 요청이 있으면 기다리기 (중복 요청 방지)
+        if (pendingRequests.has(cacheKey)) {
+            console.log(`⏳ 진행 중인 요청 대기: ${characterId}`);
+            return await pendingRequests.get(cacheKey);
+        }
+        
+        // 캐시 확인 (강제 새로고침이 아닌 경우)
+        if (!forceRefresh && isCacheValid(cacheKey, CACHE_DURATION.CHARACTER_DATA)) {
+            const cachedData = characterDataCache.get(cacheKey);
+            if (cachedData) {
+                console.log(`💾 캐시에서 캐릭터 데이터 반환: ${characterId}`);
+                return cachedData;
+            }
+        }
+        
+        // 실시간 풀에서 먼저 확인
+        if (allCharactersPool && allCharactersPool.length > 0) {
+            const poolData = allCharactersPool.find(char => char.id === characterId);
+            if (poolData) {
+                setCache(cacheKey, poolData, 'CHARACTER_DATA');
+                // 오프라인 백업에도 저장
+                saveToOfflineStorage(cacheKey, poolData);
+                console.log(`✅ 실시간 풀에서 캐릭터 데이터 반환: ${characterId}`);
+                return poolData;
+            }
+        }
+        
+        // 오프라인 상태이거나 Firebase 오류 시 오프라인 데이터 사용
+        if (!isOnline()) {
+            const offlineData = loadFromOfflineStorage(cacheKey);
+            if (offlineData) {
+                console.log(`📱 오프라인 모드: 로컬 데이터 사용 ${characterId}`);
+                setCache(cacheKey, offlineData, 'CHARACTER_DATA');
+                return offlineData;
+            }
+        }
+        
+        // Firebase에서 로딩 (최후 수단)
+        const requestPromise = loadCharacterFromFirebase(characterId);
+        pendingRequests.set(cacheKey, requestPromise);
+        
+        try {
+            const firebaseData = await requestPromise;
+            if (firebaseData) {
+                setCache(cacheKey, firebaseData, 'CHARACTER_DATA');
+                // 오프라인 백업에도 저장
+                saveToOfflineStorage(cacheKey, firebaseData);
+                console.log(`🔄 Firebase에서 캐릭터 데이터 로딩: ${characterId}`);
+            }
+            return firebaseData;
+        } catch (error) {
+            // Firebase 오류 시 오프라인 데이터 시도
+            console.warn('Firebase 오류, 오프라인 데이터 시도:', error);
+            const offlineData = loadFromOfflineStorage(cacheKey);
+            if (offlineData) {
+                console.log(`🔄 Firebase 오류로 오프라인 데이터 사용: ${characterId}`);
+                setCache(cacheKey, offlineData, 'CHARACTER_DATA');
+                return offlineData;
+            }
+            throw error;
+        } finally {
+            pendingRequests.delete(cacheKey);
+        }
+        
+    } catch (error) {
+        console.error('스마트 캐릭터 데이터 로딩 실패:', error);
+        pendingRequests.delete(`char_${characterId}`);
+        return null;
+    }
+}
+
+// Firebase에서 캐릭터 로딩 (헬퍼 함수)
+async function loadCharacterFromFirebase(characterId) {
+    const charRef = await findCharacterRef(characterId);
+    if (!charRef) return null;
+    
+    const charDoc = await getDoc(charRef);
+    if (charDoc.exists()) {
+        return { id: characterId, ...charDoc.data() };
+    }
+    return null;
+}
 
 async function findCharacterRef(characterId) {
     try {
+        // characterId가 유효한지 확인
+        if (!characterId) {
+            console.error('❌ 유효하지 않은 characterId:', characterId);
+            return null;
+        }
+        
         console.log('🔍 findCharacterRef 호출됨 (최적화), characterId:', characterId);
-        console.log('현재 사용자 ID:', currentUser?.uid);
         
         // 참조 캐시에서 먼저 확인
         if (characterRefCache.has(characterId)) {
@@ -4808,22 +5699,30 @@ async function findCharacterRef(characterId) {
         if (allCharactersPool && allCharactersPool.length > 0) {
             const cachedCharacter = allCharactersPool.find(char => char.id === characterId);
             if (cachedCharacter && cachedCharacter.userId) {
-                const charRef = doc(db, `users/${cachedCharacter.userId}/characters`, characterId);
-                characterRefCache.set(characterId, charRef); // 참조 캐시에 저장
-                console.log('✅ 실시간 풀에서 찾음 및 참조 캐시 저장:', charRef.path);
-                return charRef;
+                try {
+                    const charRef = doc(db, `users/${cachedCharacter.userId}/characters`, characterId);
+                    characterRefCache.set(characterId, charRef); // 참조 캐시에 저장
+                    console.log('✅ 실시간 풀에서 찾음 및 참조 캐시 저장:', charRef.path);
+                    return charRef;
+                } catch (refError) {
+                    console.error('실시간 풀에서 참조 생성 오류:', refError);
+                }
             }
         }
         
         // 캐시에 없으면 현재 사용자의 캐릭터에서 찾기 (최후 수단)
         if (currentUser?.uid) {
-            const userCharRef = doc(db, `users/${currentUser.uid}/characters`, characterId);
-            const userCharDoc = await getDoc(userCharRef);
-            
-            if (userCharDoc.exists()) {
-                characterRefCache.set(characterId, userCharRef); // 참조 캐시에 저장
-                console.log('🔄 Firebase에서 찾음 및 참조 캐시 저장:', userCharRef.path);
-                return userCharRef;
+            try {
+                const userCharRef = doc(db, `users/${currentUser.uid}/characters`, characterId);
+                const userCharDoc = await getDoc(userCharRef);
+                
+                if (userCharDoc.exists()) {
+                    characterRefCache.set(characterId, userCharRef); // 참조 캐시에 저장
+                    console.log('🔄 Firebase에서 찾음 및 참조 캐시 저장:', userCharRef.path);
+                    return userCharRef;
+                }
+            } catch (fbError) {
+                console.error('Firebase 참조 또는 조회 오류:', fbError);
             }
         }
         
@@ -5001,7 +5900,7 @@ async function saveLastUsedSkills(characterId, skills) {
 
 async function updateCharacterStats(winner, loser) {
     try {
-        console.log('updateCharacterStats 함수 호출됨');
+        console.log('📊 updateCharacterStats 함수 호출됨 (배치 처리 버전)');
         console.log('Winner:', winner);
         console.log('Loser:', loser);
         
@@ -5027,9 +5926,26 @@ async function updateCharacterStats(winner, loser) {
             opponentSkills: window.lastBattleData?.opponentSkills || []
         };
         
-        console.log('updateWinsLosses 호출 전');
-        await updateWinsLosses(winnerId, loserId);
-        console.log('updateWinsLosses 호출 완료');
+        // 전투 기록을 배치에 추가
+        addToBatch({
+            type: 'BATTLE_RECORD',
+            data: {
+                winnerId: winnerId,
+                winnerName: winner.name,
+                winnerImage: winner.imageUrl || winner.image_url || winner.image,
+                loserId: loserId,
+                loserName: loser.name,
+                loserImage: loser.imageUrl || loser.image_url || loser.image,
+                battleDate: new Date().toISOString(),
+                playerSkills: battleData.playerSkills,
+                opponentSkills: battleData.opponentSkills,
+                createdAt: new Date().toISOString()
+            }
+        });
+        
+        console.log('🚀 배치 처리로 승패 업데이트 시작');
+        await updateWinsLossesBatch(winnerId, loserId);
+        console.log('✅ 배치 처리 승패 업데이트 완료');
         
         // 플레이어와 상대방 모두의 최근 사용 스킬 저장
         if (window.lastBattleData?.playerSkills && window.lastBattleData.player) {
@@ -8060,7 +8976,6 @@ window.initializeDesignatedMatchModal = initializeDesignatedMatchModal;
 // 소설 시스템 전역 변수
 let currentStoryPage = 1;
 let totalStoryPages = 1;
-let storyCache = new Map();
 let isGeneratingPage = false;
 
 // 소설 시스템 초기화
@@ -8202,8 +9117,9 @@ async function loadStoryPage(pageNumber) {
         updateNavigationButtons();
         
         // 캐시에서 페이지 확인
-        if (storyCache.has(pageNumber)) {
-            displayStoryPage(storyCache.get(pageNumber));
+        const cachedPage = storyCache.get(pageNumber);
+        if (cachedPage) {
+            displayStoryPage(cachedPage);
             return;
         }
         
@@ -8214,14 +9130,22 @@ async function loadStoryPage(pageNumber) {
         if (pageNumber === 1) {
             createDefaultFirstPage();
         } else {
-            // 2페이지부터는 Firebase에서 페이지 데이터 가져오기
-            const pageData = await fetchStoryPageFromFirebase(pageNumber);
-            
-            if (pageData) {
-                storyCache.set(pageNumber, pageData);
-                displayStoryPage(pageData);
-            } else {
-                showStoryError('페이지를 찾을 수 없습니다.');
+            try {
+                // 2페이지부터는 Firebase에서 페이지 데이터 가져오기
+                const pageData = await fetchStoryPageFromFirebase(pageNumber);
+                
+                if (pageData) {
+                    storyCache.set(pageNumber, pageData);
+                    displayStoryPage(pageData);
+                } else {
+                    showStoryError('페이지를 찾을 수 없습니다.');
+                }
+            } catch (fetchError) {
+                if (fetchError.message === 'QUOTA_EXCEEDED') {
+                    showStoryError('⚠️ Firebase 일일 사용량 초과<br><br>죄송합니다. 오늘 Firebase 무료 플랜의 일일 읽기 제한을 초과했습니다.<br>내일 다시 시도해주세요.<br><br>💡 <strong>해결 방법:</strong><br>• 브라우저 새로고침 후 다시 시도<br>• 몇 시간 후 재접속<br>• 첫 페이지는 정상 작동합니다');
+                } else {
+                    showStoryError('페이지 로드 중 오류가 발생했습니다.');
+                }
             }
         }
         
@@ -8246,6 +9170,12 @@ async function fetchStoryPageFromFirebase(pageNumber) {
         return null;
     } catch (error) {
         console.error('Firebase에서 페이지 가져오기 오류:', error);
+        
+        // Firebase quota 초과 오류 처리
+        if (error.code === 'resource-exhausted' || error.message.includes('Quota exceeded')) {
+            throw new Error('QUOTA_EXCEEDED');
+        }
+        
         return null;
     }
 }
@@ -8270,7 +9200,19 @@ async function updateTotalPages() {
         
     } catch (error) {
         console.error('총 페이지 수 업데이트 오류:', error);
+        
+        // Firebase quota 초과 시에도 기본값 설정
+        if (error.code === 'resource-exhausted' || error.message.includes('Quota exceeded')) {
+            console.warn('Firebase quota 초과로 인해 기본 페이지 수(1)로 설정됩니다.');
+        }
+        
         totalStoryPages = 1;
+        
+        // UI에도 기본값 표시
+        const totalPagesElement = document.getElementById('total-pages-num');
+        if (totalPagesElement) {
+            totalPagesElement.textContent = '1';
+        }
     }
 }
 
@@ -8835,11 +9777,21 @@ function hideGenerationProgress() {
 // AI로 페이지 생성
 async function generatePageWithAI(selectedOptions, selectedCharacter, specialEventDescription) {
     try {
+        // 스토리 ID 생성 (현재 사용자 기반)
+        const storyId = currentUser.uid;
+        
+        // 캐시에서 스토리 디테일 가져오기
+        const storyDetails = await storyCache.getDetails(storyId);
+        console.log('스토리 디테일 로드 완료');
+        
         // 컨텍스트 수집
         const context = await gatherStoryContext();
         
-        // AI 프롬프트 생성
-        const prompt = createStoryPrompt(context, selectedOptions, selectedCharacter, specialEventDescription);
+        // 등장 캐릭터 자동 선택
+        const appearingCharacters = selectAppearingCharacters(selectedOptions, selectedCharacter);
+        
+        // AI 프롬프트 생성 (디테일 정보 포함)
+        const prompt = createStoryPromptWithDetails(context, selectedOptions, selectedCharacter, specialEventDescription, storyDetails, appearingCharacters);
         
         // AI 생성 요청
         const result = await generateWithFallback(prompt);
@@ -8850,14 +9802,21 @@ async function generatePageWithAI(selectedOptions, selectedCharacter, specialEve
             throw new Error('AI 생성 실패');
         }
         
-        // 등장 캐릭터 자동 선택
-        const appearingCharacters = selectAppearingCharacters(selectedOptions, selectedCharacter);
+        // 생성된 내용에서 새로운 디테일 추출
+        const newDetails = detailExtractor.extractFromContent(generatedContent, appearingCharacters);
+        console.log('새로운 디테일 추출 완료:', newDetails);
+        
+        // 로컬 캐시에 디테일 업데이트
+        storyCache.updateDetailsLocal(storyId, newDetails);
+        
+        // 생성된 내용에서 장 제목 추출
+        const extractedTitle = extractChapterTitle(generatedContent);
         
         // 페이지 데이터 구성
         const newPageNumber = totalStoryPages + 1;
         const pageData = {
             pageNumber: newPageNumber,
-            title: `제${newPageNumber}장`,
+            title: extractedTitle || `제${newPageNumber}장`,
             content: generatedContent,
             characters: appearingCharacters,
             likes: 0,
@@ -8866,8 +9825,21 @@ async function generatePageWithAI(selectedOptions, selectedCharacter, specialEve
             generator: currentUser.uid,
             generatorName: currentUser.email,
             cost: selectedOptions.reduce((sum, opt) => sum + opt.cost, 0),
-            options: selectedOptions.map(opt => opt.type)
+            options: selectedOptions.map(opt => opt.type),
+            extractedDetails: newDetails // 추출된 디테일 포함
         };
+        
+        // 캐시에 페이지 데이터 저장
+        storyCache.set(newPageNumber, pageData);
+        
+        // Firebase에 디테일 저장 (비동기)
+        setTimeout(async () => {
+            try {
+                await storyCache.saveDetailsToFirebase(storyId);
+            } catch (error) {
+                console.error('디테일 저장 실패:', error);
+            }
+        }, 1000);
         
         return pageData;
         
@@ -8923,6 +9895,34 @@ function extractKeyEvents(content) {
     });
     
     return events.slice(0, 3); // 최대 3개의 핵심 사건
+}
+
+// 생성된 내용에서 장 제목 추출
+function extractChapterTitle(content) {
+    // HTML 태그 제거
+    const cleanContent = content.replace(/<[^>]*>/g, '');
+    
+    // 제X장: 형태의 제목 찾기
+    const chapterMatch = cleanContent.match(/제(\d+)장[:\s]*([^\n\r]*)/i);
+    if (chapterMatch) {
+        const chapterNum = chapterMatch[1];
+        const chapterTitle = chapterMatch[2].trim();
+        return chapterTitle ? `제${chapterNum}장: ${chapterTitle}` : `제${chapterNum}장`;
+    }
+    
+    // h4 태그 내의 제목 찾기
+    const h4Match = content.match(/<h4[^>]*>([^<]*제\d+장[^<]*)<\/h4>/i);
+    if (h4Match) {
+        return h4Match[1].trim();
+    }
+    
+    // h2, h3 태그 내의 제목 찾기
+    const headerMatch = content.match(/<h[23][^>]*>([^<]*제\d+장[^<]*)<\/h[23]>/i);
+    if (headerMatch) {
+        return headerMatch[1].trim();
+    }
+    
+    return null; // 제목을 찾지 못한 경우
 }
 
 // 챕터 요약 생성 (5페이지마다)
@@ -9168,6 +10168,193 @@ function createStoryPrompt(context, selectedOptions, selectedCharacter, specialE
     return prompt;
 }
 
+// 디테일 정보를 포함한 스토리 프롬프트 생성
+function createStoryPromptWithDetails(context, selectedOptions, selectedCharacter, specialEventDescription, storyDetails, appearingCharacters) {
+    let prompt = `당신은 '레전드 아레나 연대기'라는 판타지 소설의 작가입니다. 다음 조건에 맞는 새로운 페이지를 작성해주세요.
+
+`;
+    
+    // 세계관 정보
+    if (context.worldview) {
+        prompt += `**세계관:**\n${context.worldview}\n\n`;
+    }
+    
+    // 전체 스토리 맥락 (챕터 요약들)
+    if (context.chapterSummaries.length > 0) {
+        prompt += `**전체 스토리 맥락:**\n`;
+        context.chapterSummaries.forEach(chapter => {
+            prompt += `- ${chapter.startPage}-${chapter.endPage}장: ${chapter.summary}\n`;
+        });
+        prompt += `\n`;
+    }
+    
+    // 스토리 디테일 정보 추가
+    if (storyDetails && Object.keys(storyDetails.characters).length > 0) {
+        prompt += `**🔍 중요한 스토리 디테일 (절대 무시하지 말 것):**\n`;
+        
+        // 캐릭터 상태 정보
+        prompt += `**캐릭터 현재 상태:**\n`;
+        Object.keys(storyDetails.characters).forEach(charId => {
+            const charDetail = storyDetails.characters[charId];
+            const charData = allCharactersPool.find(c => c.id === charId);
+            if (charData && charDetail.currentState) {
+                prompt += `- ${charData.name}: ${charDetail.currentState}\n`;
+            }
+            if (charData && charDetail.emotions && charDetail.emotions.length > 0) {
+                prompt += `  감정 상태: ${charDetail.emotions.join(', ')}\n`;
+            }
+        });
+        
+        // 현재 상황 정보
+        if (storyDetails.situations.current) {
+            prompt += `**현재 상황:** ${storyDetails.situations.current}\n`;
+        }
+        
+        // 위치 정보
+        if (storyDetails.situations.location) {
+            prompt += `**현재 위치:** ${storyDetails.situations.location}\n`;
+        }
+        
+        // 활성 이벤트
+        if (storyDetails.situations.activeEvents.length > 0) {
+            prompt += `**진행 중인 이벤트:** ${storyDetails.situations.activeEvents.join(', ')}\n`;
+        }
+        
+        // 미완료 약속들
+        const pendingPromises = storyDetails.promises.filter(p => p.status === 'pending');
+        if (pendingPromises.length > 0) {
+            prompt += `**미완료 약속/계획:**\n`;
+            pendingPromises.forEach(promise => {
+                prompt += `- ${promise.content}\n`;
+            });
+        }
+        
+        // 캐릭터 관계 정보
+        if (Object.keys(storyDetails.relationships).length > 0) {
+            prompt += `**캐릭터 관계:**\n`;
+            Object.keys(storyDetails.relationships).forEach(key => {
+                prompt += `- ${key}: ${storyDetails.relationships[key]}\n`;
+            });
+        }
+        
+        // 중요 아이템
+        if (Object.keys(storyDetails.items).length > 0) {
+            prompt += `**중요 아이템:**\n`;
+            Object.keys(storyDetails.items).forEach(itemName => {
+                const item = storyDetails.items[itemName];
+                prompt += `- ${itemName}: ${item.action} (${item.context})\n`;
+            });
+        }
+        
+        prompt += `\n⚠️ **디테일 준수 필수**: 위의 모든 디테일 정보는 이전 스토리에서 확립된 사실들입니다. 이를 무시하거나 모순되게 작성하지 마세요.\n\n`;
+    }
+    
+    // 최근 스토리 흐름 (상세)
+    if (context.recentPages.length > 0) {
+        prompt += `**최근 스토리 흐름 (상세):**\n`;
+        context.recentPages.forEach((page, index) => {
+            prompt += `- 페이지 ${page.pageNumber}: ${page.title}\n`;
+            prompt += `  등장인물: ${page.characters.map(c => c.name || c).join(', ')}\n`;
+            
+            // 마지막 페이지의 경우 내용의 마지막 부분을 포함
+            if (index === context.recentPages.length - 1 && page.content) {
+                // HTML 태그 제거하고 마지막 300자 정도만 추출
+                const cleanContent = page.content.replace(/<[^>]*>/g, '').trim();
+                const lastPart = cleanContent.length > 300 ? 
+                    '...' + cleanContent.slice(-300) : cleanContent;
+                prompt += `  마지막 상황: ${lastPart}\n`;
+            }
+        });
+        prompt += `\n`;
+    }
+    
+    // 선택된 옵션에 따른 요구사항
+    prompt += `**작성 요구사항:**\n`;
+    
+    selectedOptions.forEach(option => {
+        switch (option.type) {
+            case 'basic':
+                prompt += `- 자연스러운 스토리 진행으로 작성\n`;
+                break;
+            case 'character-focus':
+                if (selectedCharacter) {
+                    prompt += `- 기존 스토리의 자연스러운 흐름 속에서 ${selectedCharacter.name} 캐릭터가 조연으로 등장하여 의미 있는 역할을 하도록 작성\n`;
+                    prompt += `- ${selectedCharacter.name}의 클래스: ${selectedCharacter.character_class || selectedCharacter.class}\n`;
+                    if (selectedCharacter.skills && selectedCharacter.skills.length > 0) {
+                        prompt += `- ${selectedCharacter.name}의 주요 스킬: ${selectedCharacter.skills.map(s => s.name || s.skill_name).join(', ')}\n`;
+                    }
+                    prompt += `- ⚠️ 주의: ${selectedCharacter.name}는 주인공이 아닌 조연으로 등장시키고, 기존 스토리와의 연결성을 절대 끊지 말며, 이전 상황에서 자연스럽게 이어지는 범위 내에서만 활용할 것\n`;
+                    prompt += `- ⚠️ 시점 주의: 소설의 주인공 시점을 바꾸지 말고, ${selectedCharacter.name}는 조연으로서 스토리에 기여하도록 할 것\n`;
+                }
+                break;
+            case 'long-page':
+                prompt += `- 평소보다 더 자세하고 긴 내용으로 작성 (최소 800자 이상)\n`;
+                break;
+            case 'special-event':
+                if (specialEventDescription) {
+                    prompt += `- 다음 특별 이벤트를 기존 스토리 흐름에 자연스럽게 녹여서 작성: ${specialEventDescription}\n`;
+                } else {
+                    prompt += `- 기존 스토리 흐름에 자연스럽게 어울리는 특별한 이벤트 포함 (전투, 모험, 발견, 만남 등)\n`;
+                }
+                break;
+        }
+    });
+    
+    // 등장 캐릭터 정보 추가
+    if (appearingCharacters.length > 0) {
+        prompt += `\n**🚨 필수 등장 캐릭터 (절대 누락 금지) 🚨:**\n`;
+        appearingCharacters.forEach(char => {
+            const charData = allCharactersPool.find(c => c.id === char.id);
+            if (charData) {
+                prompt += `- ${char.name} (${char.role === 'main' ? '주인공' : '조연'}): ${charData.character_class || charData.class}\n`;
+                if (charData.skills && charData.skills.length > 0) {
+                    prompt += `  스킬: ${charData.skills.map(s => s.name || s.skill_name).join(', ')}\n`;
+                }
+                
+                // 캐릭터별 디테일 정보 추가
+                if (storyDetails.characters[char.id]) {
+                    const charDetail = storyDetails.characters[char.id];
+                    if (charDetail.currentState) {
+                        prompt += `  현재 상태: ${charDetail.currentState}\n`;
+                    }
+                    if (charDetail.emotions && charDetail.emotions.length > 0) {
+                        prompt += `  감정: ${charDetail.emotions.join(', ')}\n`;
+                    }
+                }
+            }
+        });
+        prompt += `\n⚠️ 위 캐릭터들은 모두 스토리에 등장해야 하며, 각자의 역할과 대사가 있어야 합니다.\n`;
+        prompt += `⚠️ 캐릭터 이름을 정확히 사용하고, 각 캐릭터의 개성과 스킬, 현재 상태를 반영해주세요.\n\n`;
+    }
+    
+    prompt += `\n**🎯 핵심 작성 규칙:**\n`;
+    prompt += `1. 한국어로 작성\n`;
+    prompt += `2. HTML 태그 사용 가능 (p, h4, strong, em, div 등)\n`;
+    prompt += `3. 🔗 **스토리 연결성 최우선**: 위에 제시된 전체 스토리 맥락과 최근 상황을 철저히 분석하여 모순 없는 자연스러운 이어짐 보장\n`;
+    prompt += `4. 📚 **설정 일관성**: 기존 캐릭터들의 성격, 능력, 관계, 과거 사건들과 완벽히 일치하도록 작성\n`;
+    prompt += `5. 🎭 **캐릭터 연속성**: 캐릭터들의 이전 행동, 감정 상태, 목표가 자연스럽게 이어지도록 작성\n`;
+    prompt += `6. 🌍 **세계관 준수**: 설정된 세계관의 규칙, 마법 시스템, 사회 구조를 엄격히 따를 것\n`;
+    prompt += `7. 🔥 **필수 캐릭터 포함**: 위에 명시된 필수 등장 캐릭터들을 반드시 스토리에 포함시키고, 각자 최소 1번 이상 대사나 행동을 하게 할 것\n`;
+    prompt += `8. 💬 **능동적 참여**: 캐릭터들이 단순히 언급만 되는 것이 아니라 실제로 행동하고 대화하는 장면을 포함할 것\n`;
+    prompt += `9. 🎪 **흥미진진한 전개**: 몰입감 있고 재미있는 스토리로 작성\n`;
+    prompt += `10. 📖 **클리프행어**: 페이지 끝에 다음 이야기가 궁금해지는 요소 포함\n`;
+    prompt += `11. 🔍 **디테일 일관성**: 위에 제시된 모든 디테일 정보를 엄격히 준수하고, 새로운 디테일이 추가될 때는 기존 정보와 모순되지 않도록 할 것\n`;
+    prompt += `🚨 **절대 금지사항**: 새로운 캐릭터가 등장한다고 해서 장소만 바뀌고 완전히 새로운 이야기를 시작하지 말 것. 반드시 이전 페이지의 상황과 자연스럽게 연결되어야 함\n`;
+    
+    if (context.recentPages.length > 0) {
+        prompt += `12. 🚨 **직접 연결 필수**: 이전 페이지의 마지막 상황에서 시간적, 공간적, 상황적으로 자연스럽게 이어지도록 작성 (위에 제시된 '마지막 상황'을 반드시 참고하여 그 직후 상황부터 시작할 것)\n`;
+    }
+    if (context.chapterSummaries.length > 0) {
+        prompt += `13. 📋 **전체 맥락 반영**: 위에 제시된 전체 스토리 맥락의 주요 사건들과 캐릭터 발전 과정을 고려하여 모순되지 않도록 작성\n`;
+    }
+    prompt += `14. 🔄 **연속성 우선**: 어떤 옵션이 선택되더라도 스토리의 연속성이 최우선이며, 옵션은 기존 스토리 흐름에 자연스럽게 녹여낼 것\n`;
+    prompt += `\n`;
+    
+    prompt += `새로운 페이지의 내용만 작성해주세요:`;
+    
+    return prompt;
+}
+
 // 등장 캐릭터 자동 선택
 function selectAppearingCharacters(selectedOptions, selectedCharacter) {
     const appearingCharacters = [];
@@ -9181,28 +10368,28 @@ function selectAppearingCharacters(selectedOptions, selectedCharacter) {
         });
     }
     
-    // 특별 이벤트 옵션이 선택된 경우에만 추가 캐릭터 자동 선택
-    const hasSpecialEvent = selectedOptions.some(opt => opt.type === 'special-event');
+    // 특별 이벤트 옵션이 선택된 경우에만 추가 캐릭터 자동 선택 - 기능 비활성화
+    // const hasSpecialEvent = selectedOptions.some(opt => opt.type === 'special-event');
     
-    if (hasSpecialEvent) {
-        // 추가 캐릭터 자동 선택 (인기도, 균형, 최근 등장 빈도 고려)
-        const availableCharacters = allCharactersPool.filter(char => 
-            !selectedCharacter || char.id !== selectedCharacter.id
-        );
-        
-        // 특별 이벤트면 1명 추가
-        const additionalCount = Math.min(1, availableCharacters.length);
-        
-        const shuffled = availableCharacters.sort(() => 0.5 - Math.random());
-        
-        for (let i = 0; i < additionalCount; i++) {
-            appearingCharacters.push({
-                id: shuffled[i].id,
-                name: shuffled[i].name,
-                role: 'supporting'
-            });
-        }
-    }
+    // if (hasSpecialEvent) {
+    //     // 추가 캐릭터 자동 선택 (인기도, 균형, 최근 등장 빈도 고려)
+    //     const availableCharacters = allCharactersPool.filter(char => 
+    //         !selectedCharacter || char.id !== selectedCharacter.id
+    //     );
+    //     
+    //     // 특별 이벤트면 1명 추가
+    //     const additionalCount = Math.min(1, availableCharacters.length);
+    //     
+    //     const shuffled = availableCharacters.sort(() => 0.5 - Math.random());
+    //     
+    //     for (let i = 0; i < additionalCount; i++) {
+    //         appearingCharacters.push({
+    //             id: shuffled[i].id,
+    //             name: shuffled[i].name,
+    //             role: 'supporting'
+    //         });
+    //     }
+    // }
     
     // 일반 스토리(basic)나 캐릭터 중심(character-focus) 옵션만 선택된 경우에는 추가 캐릭터 자동 선택 안함
     // 캐릭터 중심 옵션은 선택된 캐릭터만 등장하고, 기존 스토리의 연속성이 더 잘 유지됨
