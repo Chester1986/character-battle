@@ -33,24 +33,36 @@ async function generateImageWithRunware(prompt) {
             body: JSON.stringify([{
                 taskType: 'imageInference',
                 taskUUID: taskUUID,
+                outputType: 'URL',
+                outputFormat: 'JPG',
                 positivePrompt: prompt,
-                model: 'runware:100@1',
+                model: 'runware:101@1',
                 numberResults: 1,
                 height: 512,
                 width: 512,
-                steps: 4,
-                CFGScale: 1.0
+                steps: 20,
+                CFGScale: 7.0
             }]),
             timeout: 30000
         });
 
         if (!response.ok) {
-            throw new Error(`Runware API 오류: ${response.status}`);
+            const errorText = await response.text();
+            console.error('Runware API 응답 오류:', errorText);
+            throw new Error(`Runware API 오류: ${response.status} - ${errorText}`);
         }
 
         const data = await response.json();
-        if (data && data.length > 0 && data[0].imageURL) {
-            return data[0].imageURL;
+        console.log('Runware API 응답:', JSON.stringify(data, null, 2));
+        
+        // 에러 체크
+        if (data.errors && data.errors.length > 0) {
+            throw new Error(`Runware API 에러: ${data.errors[0].message}`);
+        }
+        
+        // 성공 응답 체크
+        if (data && data.data && data.data.length > 0 && data.data[0].imageURL) {
+            return data.data[0].imageURL;
         } else {
             throw new Error('Runware API에서 이미지 URL을 받지 못했습니다');
         }
