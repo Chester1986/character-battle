@@ -491,6 +491,11 @@ const rankingCharacterDetailModal = document.getElementById('ranking-character-d
 const rankingCharacterDetailContent = document.getElementById('ranking-character-detail-content');
 const rankingCharacterDetailCloseBtn = rankingCharacterDetailModal.querySelector('.close-btn');
 
+// 관리자 캐릭터 상세 모달 관련 DOM 요소들
+const adminCharacterDetailModal = document.getElementById('admin-character-detail-modal');
+const adminCharacterDetailContent = document.getElementById('admin-character-detail-content');
+const adminCharacterDetailCloseBtn = adminCharacterDetailModal.querySelector('.close-btn');
+
 const skillModal = document.getElementById('skill-modal');
 const skillModalCharName = document.getElementById('skill-modal-char-name');
 const skillList = document.getElementById('skill-list');
@@ -513,6 +518,10 @@ rankingCloseBtn.addEventListener('click', () => {
 
 rankingCharacterDetailCloseBtn.addEventListener('click', () => {
     rankingCharacterDetailModal.classList.add('hidden');
+});
+
+adminCharacterDetailCloseBtn.addEventListener('click', () => {
+    adminCharacterDetailModal.classList.add('hidden');
 });
 
 skillCloseBtn.addEventListener('click', () => {
@@ -7052,7 +7061,9 @@ async function loadAllCharactersForAdmin() {
             characterCard.className = 'admin-character-card';
             characterCard.innerHTML = `
                 <div class="admin-character-info">
-                    <img src="${character.imageUrl}" alt="${character.name}" class="admin-character-image">
+                    <img src="${character.imageUrl}" alt="${character.name}" class="admin-character-image" 
+                         onclick="showAdminCharacterDetails('${character.userId}', '${character.id}')" 
+                         style="cursor: pointer;">
                     <div class="admin-character-details">
                         <h4>${character.name}</h4>
                         <p><strong>클래스:</strong> ${character.class}</p>
@@ -7075,6 +7086,112 @@ async function loadAllCharactersForAdmin() {
     } catch (error) {
         console.error('Error loading characters for admin:', error);
         adminCharactersList.innerHTML = '<p>캐릭터 목록을 불러오는 중 오류가 발생했습니다.</p>';
+    }
+}
+
+// 관리자 캐릭터 상세 정보 표시 함수
+async function showAdminCharacterDetails(userId, characterId) {
+    try {
+        // 페이지 상단으로 스크롤
+        window.scrollTo(0, 0);
+        
+        // Firebase에서 캐릭터 데이터 가져오기
+        const characterRef = doc(db, 'users', userId, 'characters', characterId);
+        const characterDoc = await getDoc(characterRef);
+        
+        if (!characterDoc.exists()) {
+            alert('캐릭터 정보를 찾을 수 없습니다.');
+            return;
+        }
+        
+        const characterData = characterDoc.data();
+        
+        // 캐릭터 이미지 URL 처리
+        const imageUrl = characterData.imageUrl || 'https://placehold.co/300x300/333/FFF?text=?';
+        
+        // 스킬 정보 처리 (attack_skills와 defense_skills 모두 포함)
+        let allSkills = [];
+        if (characterData.attack_skills) {
+            allSkills.push(...characterData.attack_skills.map(skill => ({...skill, type: '공격'})));
+        }
+        if (characterData.defense_skills) {
+            allSkills.push(...characterData.defense_skills.map(skill => ({...skill, type: '방어'})));
+        }
+        
+        const skillsHtml = allSkills.length > 0 ? 
+            allSkills.map(skill => `
+                <div class="skill-item">
+                    <h4>${skill.name} <span class="skill-type">(${skill.type})</span></h4>
+                    <p>${skill.description}</p>
+                </div>
+            `).join('') : '<p>스킬 정보가 없습니다.</p>';
+        
+        // 전적 계산
+        const wins = characterData.wins || 0;
+        const losses = characterData.losses || 0;
+        const totalBattles = wins + losses;
+        const winRate = totalBattles > 0 ? (wins / totalBattles * 100).toFixed(1) : 0;
+        
+        adminCharacterDetailContent.innerHTML = `
+            <div class="character-detail-container">
+                <div class="character-detail-header">
+                    <div class="character-image-container">
+                        <img src="${imageUrl}" alt="${characterData.name}" class="character-image" 
+                             onerror="this.src='https://placehold.co/300x300/333/FFF?text=?'"
+                             onclick="openImageModal('${imageUrl}', '${characterData.name}')"
+                             style="cursor: pointer;">
+                    </div>
+                    <div class="character-basic-info">
+                        <h2>${characterData.name}</h2>
+                        <div class="character-rank">
+                            <span class="rank-badge">${characterData.class}</span>
+                        </div>
+                        <div class="character-record">
+                            <div class="record-item">
+                                <span class="record-label">사용자 ID:</span>
+                                <span class="record-value">${userId}</span>
+                            </div>
+                            <div class="record-item">
+                                <span class="record-label">승률:</span>
+                                <span class="record-value">${winRate}%</span>
+                            </div>
+                            <div class="record-item">
+                                <span class="record-label">전적:</span>
+                                <span class="record-value"><span class="wins">${wins}승</span> <span class="losses">${losses}패</span></span>
+                            </div>
+                            <div class="record-item">
+                                <span class="record-label">총 경기:</span>
+                                <span class="record-value">${totalBattles}경기</span>
+                            </div>
+                            <div class="record-item">
+                                <span class="record-label">생성일:</span>
+                                <span class="record-value">${characterData.createdAt || '알 수 없음'}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="character-detail-body">
+                    <div class="character-story">
+                        <h3>캐릭터 스토리</h3>
+                        <p>${characterData.story || '스토리 정보가 없습니다.'}</p>
+                    </div>
+                    
+                    <div class="character-skills">
+                        <h3>스킬</h3>
+                        <div class="skills-container">
+                            ${skillsHtml}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        adminCharacterDetailModal.classList.remove('hidden');
+        
+    } catch (error) {
+        console.error('Error loading admin character details:', error);
+        alert('캐릭터 상세 정보를 불러오는 중 오류가 발생했습니다.');
     }
 }
 
@@ -7210,6 +7327,7 @@ async function exportAdminData() {
 
 // 전역 함수로 만들어서 HTML onclick에서 호출 가능하게 함
 window.deleteCharacterFromAdmin = deleteCharacterFromAdmin;
+window.showAdminCharacterDetails = showAdminCharacterDetails;
 window.showBattleExitModal = showBattleExitModal;
 window.confirmBattleExit = confirmBattleExit;
 window.closeBattleExitModal = closeBattleExitModal;
@@ -10570,3 +10688,61 @@ window.deleteLatestPage = deleteLatestPage;
 window.deleteCurrentPage = deleteCurrentPage;
 
 console.log('소설 시스템 모듈 로드 완료');
+
+// ------------------------------------------------------------------
+// 유튜브 모달 기능
+// ------------------------------------------------------------------
+
+// 유튜브 모달 관련 요소들
+const youtubeBtn = document.getElementById('youtube-btn');
+const youtubeModal = document.getElementById('youtube-modal');
+const youtubeModalClose = document.getElementById('youtube-modal-close');
+const youtubeIframe = document.getElementById('youtube-iframe');
+
+// 유튜브 영상 URL
+const YOUTUBE_VIDEO_URL = 'https://www.youtube.com/embed/3ZKz5FWya88?autoplay=1&rel=0';
+
+// 유튜브 버튼 클릭 이벤트
+if (youtubeBtn) {
+    youtubeBtn.addEventListener('click', () => {
+        if (youtubeModal && youtubeIframe) {
+            youtubeIframe.src = YOUTUBE_VIDEO_URL;
+            youtubeModal.classList.remove('hidden');
+            document.body.style.overflow = 'hidden'; // 배경 스크롤 방지
+        }
+    });
+}
+
+// 모달 닫기 버튼 클릭 이벤트
+if (youtubeModalClose) {
+    youtubeModalClose.addEventListener('click', () => {
+        closeYoutubeModal();
+    });
+}
+
+// 모달 배경 클릭 시 닫기
+if (youtubeModal) {
+    youtubeModal.addEventListener('click', (e) => {
+        if (e.target === youtubeModal) {
+            closeYoutubeModal();
+        }
+    });
+}
+
+// ESC 키로 모달 닫기
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && youtubeModal && !youtubeModal.classList.contains('hidden')) {
+        closeYoutubeModal();
+    }
+});
+
+// 유튜브 모달 닫기 함수
+function closeYoutubeModal() {
+    if (youtubeModal && youtubeIframe) {
+        youtubeModal.classList.add('hidden');
+        youtubeIframe.src = ''; // 영상 정지
+        document.body.style.overflow = ''; // 배경 스크롤 복원
+    }
+}
+
+console.log('유튜브 모달 시스템 로드 완료');

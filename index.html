@@ -22,6 +22,7 @@
             </div>
         </div>
         <nav class="header-nav">
+            <button id="youtube-btn" class="youtube-btn" title="트레일러 보기">▶️</button>
             <button id="show-story-btn" class="hidden">📖 스토리</button>
             <button id="show-ranking-btn" class="hidden">🏅 랭킹</button>
             <button id="admin-btn" class="hidden">⚙️ 관리</button>
@@ -339,6 +340,16 @@
         </div>
     </div>
 
+    <!-- 관리자 캐릭터 상세 정보 모달 -->
+    <div id="admin-character-detail-modal" class="modal hidden">
+        <div class="modal-content large">
+            <span class="close-btn">&times;</span>
+            <div id="admin-character-detail-content">
+                <!-- 관리자 캐릭터 상세 정보가 여기에 표시됩니다 -->
+            </div>
+        </div>
+    </div>
+
     <!-- 지정매칭 모달 -->
     <div id="designated-match-modal" class="modal hidden">
         <div class="modal-content">
@@ -526,6 +537,21 @@
             </div>
         </div>
     </footer>
+
+    <!-- 유튜브 모달 -->
+    <div id="youtube-modal" class="modal hidden">
+        <div class="modal-content youtube-modal-content">
+            <span class="close" id="youtube-modal-close">&times;</span>
+            <div class="youtube-container">
+                <iframe id="youtube-iframe" 
+                        src="" 
+                        frameborder="0" 
+                        allowfullscreen
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture">
+                </iframe>
+            </div>
+        </div>
+    </div>
 
     <!-- Firebase SDK (v9) is now imported as modules in app.js -->
         <script>
