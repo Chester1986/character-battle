@@ -4,6 +4,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/9.15.0/firebase-app.js";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.15.0/firebase-auth.js";
 import { getFirestore, doc, setDoc, addDoc, collection, getDocs, getDoc, runTransaction, query, where, limit, orderBy, collectionGroup, deleteDoc, writeBatch, updateDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/9.15.0/firebase-firestore.js";
+// Firebase Storage import 제거 - 이미지 압축 방식 사용
 import { GoogleGenerativeAI } from "https://esm.run/@google/generative-ai";
 
 // --- CONFIGURATION ---
@@ -25,6 +26,7 @@ const GEMINI_API_KEY_2 = "AIzaSyBWGh2EuJ90wkCEJ1knfJbjl1XsJX6I1nI"; // 두 번�
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+// Firebase Storage 초기화 제거 - 이미지 압축 방식 사용
 
 // 첫 번째 API 키로 초기화
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
@@ -740,6 +742,16 @@ function initializeRealTimeListeners() {
         });
         
         allCharactersPool = newCharacters;
+        
+        // 히든 캐릭터를 매칭 풀에 추가
+        addHiddenCharactersToPool().then(hiddenCount => {
+            if (hiddenCount > 0) {
+                console.log(`🌟 히든 캐릭터 ${hiddenCount}개가 매칭 풀에 추가됨`);
+            }
+        }).catch(error => {
+            console.error('히든 캐릭터 매칭 풀 추가 실패:', error);
+        });
+        
         console.log(`✅ 전체 캐릭터 풀 업데이트: ${allCharactersPool.length}개`);
         
         // 배치 랭킹 업데이트 (5분마다만)
@@ -1009,14 +1021,18 @@ loginBtn.addEventListener('click', async () => {
         return;
     }
 
-    signInWithEmailAndPassword(auth, email, password)
-        .catch((error) => {
-            if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
-                alert('아이디 또는 비밀번호가 잘못되었습니다.');
-            } else {
-                alert(`로그인 실패: ${error.code}`);
-            }
-        });
+    try {
+        await signInWithEmailAndPassword(auth, email, password);
+        console.log('로그인 성공');
+        // onAuthStateChanged에서 자동으로 UI 전환 처리됨
+    } catch (error) {
+        console.error('로그인 오류:', error);
+        if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+            alert('아이디 또는 비밀번호가 잘못되었습니다.');
+        } else {
+            alert(`로그인 실패: ${error.code}`);
+        }
+    }
 });
 
 logoutBtn.addEventListener('click', () => { signOut(auth); });
@@ -1280,6 +1296,71 @@ function getConceptKeywords(characterConcept) {
 
 
 
+// 이미지 크기를 확인하고 필요시 압축하는 함수
+function compressImageIfNeeded(dataUrl) {
+    try {
+        // base64 데이터 크기 계산 (대략적)
+        const base64Data = dataUrl.split(',')[1];
+        const sizeInBytes = (base64Data.length * 3) / 4;
+        const sizeInMB = sizeInBytes / (1024 * 1024);
+        
+        console.log(`이미지 크기: ${sizeInMB.toFixed(2)}MB`);
+        
+        // 0.8MB 이상이면 압축 필요
+        if (sizeInMB > 0.8) {
+            console.log('이미지가 너무 큽니다. 압축을 시도합니다.');
+            return compressBase64Image(dataUrl, 0.7); // 70% 품질로 압축
+        }
+        
+        return dataUrl;
+    } catch (error) {
+        console.error('이미지 크기 확인 실패:', error);
+        return dataUrl; // 오류 시 원본 반환
+    }
+}
+
+// base64 이미지를 압축하는 함수
+function compressBase64Image(dataUrl, quality = 0.7) {
+    return new Promise((resolve) => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+        
+        img.onload = function() {
+            // 캔버스 크기 설정 (최대 512x512)
+            const maxSize = 512;
+            let { width, height } = img;
+            
+            if (width > maxSize || height > maxSize) {
+                if (width > height) {
+                    height = (height * maxSize) / width;
+                    width = maxSize;
+                } else {
+                    width = (width * maxSize) / height;
+                    height = maxSize;
+                }
+            }
+            
+            canvas.width = width;
+            canvas.height = height;
+            
+            // 이미지 그리기 및 압축
+            ctx.drawImage(img, 0, 0, width, height);
+            const compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+            
+            console.log('이미지 압축 완료');
+            resolve(compressedDataUrl);
+        };
+        
+        img.onerror = function() {
+            console.error('이미지 압축 실패');
+            resolve(dataUrl); // 실패 시 원본 반환
+        };
+        
+        img.src = dataUrl;
+    });
+}
+
 // ...
 async function generateAndUploadImage(imagePrompt, characterName, characterClass, characterConcept) {
     console.log(`Generating image for ${characterName} with AI...`);
@@ -1293,8 +1374,18 @@ async function generateAndUploadImage(imagePrompt, characterName, characterClass
     console.log(`Enhanced image prompt: ${enhancedPrompt}`);
     
     try {
-        const imageUrl = await callImageGenerationApi(enhancedPrompt);
-        return imageUrl;
+        // 이미지 생성 (base64 데이터 URL 반환)
+        const imageDataUrl = await callImageGenerationApi(enhancedPrompt);
+        
+        if (!imageDataUrl) {
+            console.log('⚠️ 이미지 생성 실패, 기본 이미지 사용');
+            return `https://placehold.co/512x512/EEE/31343C.png?text=${encodeURIComponent(characterName)}`;
+        }
+        
+        // 이미지 크기 확인 및 필요시 압축
+        const finalImageUrl = await compressImageIfNeeded(imageDataUrl);
+        
+        return finalImageUrl;
     } catch (error) {
         console.error(`Error generating image for ${characterName}:`, error);
         return `https://placehold.co/512x512/EEE/31343C.png?text=${encodeURIComponent(characterName)}`;
@@ -1412,6 +1503,12 @@ function createMainCharacterCard(character) {
     card.className = 'character-main-card';
     card.dataset.characterId = character.id;
 
+    // 히든 캐릭터인지 확인 (isHidden 속성 또는 userId가 'system'인 경우)
+    const isHiddenCharacter = character.isHidden === true || character.userId === 'system';
+    if (isHiddenCharacter) {
+        card.classList.add('hidden-character-glow');
+    }
+
     const wins = character.wins || 0;
     const losses = character.losses || 0;
     const totalBattles = wins + losses;
@@ -1422,7 +1519,7 @@ function createMainCharacterCard(character) {
             <img src="${(character.imageUrl || 'https://placehold.co/512x512/EEE/31343C.png?text=No+Image') + (character.imageUrl && !character.imageUrl.startsWith('data:') ? '?t=' + new Date().getTime() : '')}" alt="${character.name}" class="character-image" onerror="this.src='https://placehold.co/512x512/EEE/31343C.png?text=Error'">
         </div>
         <div class="character-info">
-            <h3 class="character-name">${character.name}</h3>
+            <h3 class="character-name ${isHiddenCharacter ? 'hidden-character-name' : ''}">${character.name}</h3>
             <p class="character-class">${character.class || '클래스 정보 없음'}</p>
             <div class="character-stats">
                 <span class="win-rate">${winRate}%</span>
@@ -2010,16 +2107,32 @@ async function startBattleFromDetail(characterId) {
         
         // 상대방 찾기 - 자신의 캐릭터와 같은 사용자의 캐릭터 제외 (최적화됨)
         if (allCharactersPool.length > 1) {
+            console.log('🔍 매칭 전 전체 풀 크기:', allCharactersPool.length);
+            console.log('🔍 매칭 전 히든 캐릭터 수:', allCharactersPool.filter(c => c.isHidden).length);
+            console.log('🔍 현재 사용자 ID:', currentUser.uid);
+            
             const availableOpponents = allCharactersPool.filter(c => 
                 c.id !== character.id && c.userId !== currentUser.uid
             );
+            
+            console.log('🎯 매칭 가능한 상대 수:', availableOpponents.length);
+            console.log('🎯 매칭 가능한 히든 캐릭터 수:', availableOpponents.filter(c => c.isHidden).length);
+            console.log('🎯 매칭 가능한 상대 목록:', availableOpponents.map(c => `${c.name} (${c.isHidden ? 'Hidden' : 'Normal'}, userId: ${c.userId})`));
             
             if (availableOpponents.length === 0) {
                 alert('매칭 가능한 다른 사용자의 캐릭터가 없습니다.');
                 return;
             }
             
-            const randomOpponent = availableOpponents[Math.floor(Math.random() * availableOpponents.length)];
+            const randomIndex = Math.floor(Math.random() * availableOpponents.length);
+            const randomOpponent = availableOpponents[randomIndex];
+            
+            console.log('🎲 랜덤 선택 과정:');
+            console.log('  - 전체 매칭 가능한 상대 수:', availableOpponents.length);
+            console.log('  - 생성된 랜덤 인덱스:', randomIndex);
+            console.log('  - 선택된 상대:', randomOpponent.name, '(', randomOpponent.isHidden ? 'Hidden' : 'Normal', ')');
+            console.log('  - 히든 캐릭터 위치:', availableOpponents.findIndex(c => c.isHidden));
+            console.log('  - 루나킹 위치:', availableOpponents.findIndex(c => c.name === '루나킹'));
             
             // 상대방의 최신 데이터를 캐시 우선으로 가져오기
             try {
@@ -2058,6 +2171,15 @@ async function startBattleFromDetail(characterId) {
             }
             
             console.log('🎯 상대방 선택됨:', opponentCharacterForBattle.name);
+            
+            // 히든 캐릭터 선택 시 추가 디버깅
+            if (opponentCharacterForBattle.isHidden || opponentCharacterForBattle.userId === 'system') {
+                console.log('🌟 히든 캐릭터가 선택됨!');
+                console.log('  - 캐릭터 이름:', opponentCharacterForBattle.name);
+                console.log('  - isHidden 속성:', opponentCharacterForBattle.isHidden);
+                console.log('  - userId 속성:', opponentCharacterForBattle.userId);
+                console.log('  - 전체 캐릭터 데이터:', opponentCharacterForBattle);
+            }
             
             // 매칭 화면으로 이동
             showView('matching');
@@ -2100,11 +2222,11 @@ function showMatchingScreen() {
             <!-- 상대방 캐릭터 정보 -->
             <div class="opponent-info-section">
                 <h3>매칭된 상대</h3>
-                <div class="opponent-card" onclick="showOpponentDetails()">
+                <div class="opponent-card ${(opponentCharacterForBattle.isHidden || opponentCharacterForBattle.userId === 'system') ? 'hidden-character-glow' : ''}" onclick="showOpponentDetails()">
                     <img src="${opponentCharacterForBattle.imageUrl || 'https://placehold.co/200x200/333/FFF?text=?'}" 
                          alt="${opponentCharacterForBattle.name || 'Unknown'}" class="opponent-image">
                     <div class="opponent-info">
-                        <h4>${opponentCharacterForBattle.name || 'Unknown Character'}</h4>
+                        <h4 class="${(opponentCharacterForBattle.isHidden || opponentCharacterForBattle.userId === 'system') ? 'hidden-character-name' : ''}">${opponentCharacterForBattle.name || 'Unknown Character'}</h4>
                         <p class="opponent-class">${opponentCharacterForBattle.class || '정보 없음'}</p>
                         <div class="opponent-stats">
                             <span>승률: ${calculateWinRate(opponentCharacterForBattle)}%</span>
@@ -2142,6 +2264,40 @@ function showMatchingScreen() {
             console.log(`체크박스 ${index} 이벤트 리스너 추가:`, checkbox);
             checkbox.addEventListener('change', handleMatchingSkillSelection);
         });
+        
+        // 히든 캐릭터 스타일 강제 적용
+        console.log('=== showMatchingScreen 히든 캐릭터 디버깅 ===');
+        console.log('상대방 캐릭터:', opponentCharacterForBattle);
+        console.log('isHidden:', opponentCharacterForBattle?.isHidden);
+        console.log('userId:', opponentCharacterForBattle?.userId);
+        
+        const isHiddenCharacter = opponentCharacterForBattle?.isHidden || opponentCharacterForBattle?.userId === 'system';
+        console.log('히든 캐릭터 여부:', isHiddenCharacter);
+        
+        if (isHiddenCharacter) {
+            console.log('🌟 showMatchingScreen 히든 캐릭터 스타일 강제 적용 중...');
+            const opponentCard = document.querySelector('.opponent-card');
+            if (opponentCard) {
+                // 클래스 강제 추가
+                opponentCard.classList.add('hidden-character-glow');
+                
+                // 인라인 스타일 강제 적용
+                opponentCard.style.border = '3px solid #FFD700 !important';
+                opponentCard.style.boxShadow = '0 0 20px rgba(255, 215, 0, 0.8), inset 0 0 20px rgba(255, 215, 0, 0.3) !important';
+                opponentCard.style.background = 'linear-gradient(135deg, rgba(255, 215, 0, 0.1), rgba(255, 215, 0, 0.05)) !important';
+                opponentCard.style.animation = 'hiddenOpponentGlow 2s ease-in-out infinite alternate !important';
+                
+                console.log('✅ showMatchingScreen 히든 캐릭터 스타일 강제 적용 완료');
+                console.log('적용된 클래스:', opponentCard.classList.toString());
+                console.log('적용된 스타일:', opponentCard.style.cssText);
+            }
+            
+            // 히든 캐릭터 이름 스타일 적용
+            const opponentName = document.querySelector('.opponent-info h4');
+            if (opponentName) {
+                opponentName.classList.add('hidden-character-name');
+            }
+        }
         
         // 스킬 선택 아이템 전체에 클릭 이벤트 리스너 추가 (모바일 드래그 방지 포함)
         const skillItems = document.querySelectorAll('.skill-selection-item');
@@ -3543,6 +3699,20 @@ function showMatchedOpponentScreen() {
     if (battleArenaContainer) battleArenaContainer.classList.add('hidden');
     if (battleControls) battleControls.classList.add('hidden');
     
+    // 히든 캐릭터인지 확인
+    const isHiddenCharacter = opponentCharacterForBattle.isHidden === true || opponentCharacterForBattle.userId === 'system';
+    const hiddenCharacterClass = isHiddenCharacter ? ' hidden-character-glow' : '';
+    const hiddenCharacterNameClass = isHiddenCharacter ? ' hidden-character-name' : '';
+    
+    // 디버깅 로그 추가
+    console.log('=== 일반 매칭 화면 히든 캐릭터 디버깅 ===');
+    console.log('상대방 캐릭터:', opponentCharacterForBattle);
+    console.log('opponentCharacterForBattle.isHidden:', opponentCharacterForBattle.isHidden);
+    console.log('opponentCharacterForBattle.userId:', opponentCharacterForBattle.userId);
+    console.log('isHiddenCharacter:', isHiddenCharacter);
+    console.log('hiddenCharacterClass:', hiddenCharacterClass);
+    console.log('hiddenCharacterNameClass:', hiddenCharacterNameClass);
+    
     // 매칭된 상대방 정보 화면 생성
     const matchedScreen = document.createElement('div');
     matchedScreen.id = 'matched-opponent-screen';
@@ -3555,11 +3725,11 @@ function showMatchedOpponentScreen() {
         </div>
         <div class="opponent-info-container">
             <div class="opponent-card-wrapper" onclick="showOpponentDetails()">
-                <div class="opponent-card">
+                <div class="opponent-card${hiddenCharacterClass}">
                     <img src="${opponentCharacterForBattle.imageUrl || 'https://placehold.co/200x200/333/FFF?text=?'}" 
                          alt="${opponentCharacterForBattle.name}" class="opponent-image">
                     <div class="opponent-info">
-                        <h4>${opponentCharacterForBattle.name}</h4>
+                        <h4 class="${hiddenCharacterNameClass}">${opponentCharacterForBattle.name}</h4>
                         <p class="opponent-class">${opponentCharacterForBattle.class}</p>
                         <p class="click-hint">클릭하여 상세 정보 보기</p>
                     </div>
@@ -3576,6 +3746,25 @@ function showMatchedOpponentScreen() {
     // 기존 arena에 추가
     const arena = document.getElementById('arena');
     arena.appendChild(matchedScreen);
+    
+    // DOM 요소 생성 후 히든 캐릭터 스타일 강제 적용
+    setTimeout(() => {
+        const opponentCardElement = document.querySelector('.opponent-card');
+        if (opponentCardElement && isHiddenCharacter) {
+            console.log('🌟 일반 매칭 화면 히든 캐릭터 스타일 강제 적용 중...');
+            
+            // 클래스 강제 추가
+            opponentCardElement.classList.add('hidden-character-glow');
+            
+            // 인라인 스타일로도 강제 적용
+            opponentCardElement.style.border = '3px solid #ffd700';
+            opponentCardElement.style.boxShadow = '0 0 25px rgba(255, 215, 0, 0.6), 0 0 50px rgba(255, 215, 0, 0.4)';
+            opponentCardElement.style.background = 'linear-gradient(135deg, #1a1a2e, #16213e, #0f3460)';
+            opponentCardElement.style.animation = 'hiddenOpponentGlow 2s ease-in-out infinite';
+            
+            console.log('✅ 일반 매칭 화면 히든 캐릭터 스타일 강제 적용 완료');
+        }
+    }, 100);
     
     // 스킬 선택 UI 생성
     createMatchedSkillSelection();
@@ -3780,6 +3969,15 @@ function showOpponentDetails() {
     
     document.body.appendChild(modal);
     
+    // 이미지 클릭 이벤트 추가 (확대 기능)
+    const opponentImage = modal.querySelector('.opponent-detail-image');
+    if (opponentImage) {
+        opponentImage.style.cursor = 'pointer';
+        opponentImage.addEventListener('click', () => {
+            openImageModal(opponentCharacterForBattle.imageUrl || 'https://placehold.co/200x200/333/FFF?text=?', opponentCharacterForBattle.name);
+        });
+    }
+    
     // 모달 외부 클릭 시 닫기
     modal.addEventListener('click', (e) => {
         if (e.target === modal) {
@@ -3965,9 +4163,16 @@ async function findRandomOpponent(playerCharacterId) {
     }
     
     // 자신의 캐릭터와 같은 사용자의 캐릭터 제외
+    console.log(`🔍 매칭 전 전체 풀: ${allCharactersPool.length}개`);
+    console.log(`🔍 히든 캐릭터 수: ${allCharactersPool.filter(c => c.isHidden).length}개`);
+    console.log(`🔍 현재 사용자 ID: ${currentUser.uid}`);
+    
     let availableOpponents = allCharactersPool.filter(c => 
         c.id !== playerCharacterId && c.userId !== currentUser.uid
     );
+    
+    console.log(`🎯 매칭 가능한 상대: ${availableOpponents.length}개`);
+    console.log(`🎯 매칭 풀의 히든 캐릭터: ${availableOpponents.filter(c => c.isHidden).length}개`);
     
     if (availableOpponents.length === 0) {
         console.log('매칭 가능한 다른 사용자의 캐릭터가 없습니다.');
@@ -4067,6 +4272,7 @@ function clearRecentOpponents() {
 // 새로운 상대 매칭 함수
 async function matchNewOpponent() {
     console.log('새로운 상대 매칭 시작...');
+    console.log('=== matchNewOpponent 함수 호출됨 ===');
     
     // 현재 플레이어 캐릭터가 있는지 확인
     if (!playerCharacterForBattle) {
@@ -4121,6 +4327,20 @@ function showMatchedOpponentScreenFresh(opponent) {
     if (battleArenaContainer) battleArenaContainer.classList.add('hidden');
     if (battleControls) battleControls.classList.add('hidden');
     
+    // 히든 캐릭터인지 확인
+    const isHiddenCharacter = opponent.isHidden === true || opponent.userId === 'system';
+    const hiddenCharacterClass = isHiddenCharacter ? ' hidden-character-glow' : '';
+    const hiddenCharacterNameClass = isHiddenCharacter ? ' hidden-character-name' : '';
+    
+    // 디버깅 로그 추가
+    console.log('=== 매칭 화면 히든 캐릭터 디버깅 ===');
+    console.log('상대방 캐릭터:', opponent);
+    console.log('opponent.isHidden:', opponent.isHidden);
+    console.log('opponent.userId:', opponent.userId);
+    console.log('isHiddenCharacter:', isHiddenCharacter);
+    console.log('hiddenCharacterClass:', hiddenCharacterClass);
+    console.log('hiddenCharacterNameClass:', hiddenCharacterNameClass);
+    
     // 완전히 새로운 매칭 화면 생성
     const matchedScreen = document.createElement('div');
     matchedScreen.id = 'matched-opponent-screen';
@@ -4133,11 +4353,11 @@ function showMatchedOpponentScreenFresh(opponent) {
         </div>
         <div class="opponent-info-container">
             <div class="opponent-card-wrapper" onclick="showOpponentDetails()">
-                <div class="opponent-card">
+                <div class="opponent-card${hiddenCharacterClass}">
                     <img src="${opponent.imageUrl || 'https://placehold.co/200x200/333/FFF?text=?'}" 
                          alt="${opponent.name}" class="opponent-image">
                     <div class="opponent-info">
-                        <h4>${opponent.name}</h4>
+                        <h4 class="${hiddenCharacterNameClass}">${opponent.name}</h4>
                         <p class="opponent-class">${opponent.class}</p>
                         <p class="click-hint">클릭하여 상세 정보 보기</p>
                     </div>
@@ -4154,6 +4374,47 @@ function showMatchedOpponentScreenFresh(opponent) {
     // arena에 추가
     const arena = document.getElementById('arena');
     arena.appendChild(matchedScreen);
+    
+    // DOM 요소 생성 후 실제 클래스 확인 및 강제 적용
+    setTimeout(() => {
+        const opponentCardElement = document.querySelector('.opponent-card');
+        if (opponentCardElement) {
+            console.log('=== DOM 요소 클래스 확인 ===');
+            console.log('opponent-card 요소:', opponentCardElement);
+            console.log('클래스 목록:', opponentCardElement.className);
+            console.log('hidden-character-glow 클래스 포함:', opponentCardElement.classList.contains('hidden-character-glow'));
+            console.log('실제 적용된 스타일:');
+            const computedStyle = window.getComputedStyle(opponentCardElement);
+            console.log('  - border:', computedStyle.border);
+            console.log('  - box-shadow:', computedStyle.boxShadow);
+            console.log('  - background:', computedStyle.background);
+            
+            // 히든 캐릭터인 경우 강제로 클래스와 스타일 적용
+            if (isHiddenCharacter) {
+                console.log('🌟 히든 캐릭터 스타일 강제 적용 중...');
+                
+                // 클래스 강제 추가
+                opponentCardElement.classList.add('hidden-character-glow');
+                
+                // 인라인 스타일로도 강제 적용
+                opponentCardElement.style.border = '3px solid #ffd700';
+                opponentCardElement.style.boxShadow = '0 0 25px rgba(255, 215, 0, 0.6), 0 0 50px rgba(255, 215, 0, 0.4)';
+                opponentCardElement.style.background = 'linear-gradient(135deg, #1a1a2e, #16213e, #0f3460)';
+                opponentCardElement.style.animation = 'hiddenOpponentGlow 2s ease-in-out infinite';
+                
+                console.log('✅ 히든 캐릭터 스타일 강제 적용 완료');
+                
+                // 적용 후 다시 확인
+                setTimeout(() => {
+                    const updatedStyle = window.getComputedStyle(opponentCardElement);
+                    console.log('=== 강제 적용 후 스타일 확인 ===');
+                    console.log('  - border:', updatedStyle.border);
+                    console.log('  - box-shadow:', updatedStyle.boxShadow);
+                    console.log('  - background:', updatedStyle.background);
+                }, 50);
+            }
+        }
+    }, 100);
     
     // 완전히 새로운 스킬 선택 UI 생성
     createMatchedSkillSelectionFresh();
@@ -4855,8 +5116,22 @@ async function startTurnBasedBattleNew() {
         if (isPlayerWin) {
             console.log('플레이어 승리 - 루나 지급 알림 표시 시도');
             try {
-                // 루나 지급 처리
-                await awardLunaToCharacterOwner(playerCharacterForBattle.id || playerCharacterForBattle.character_id || playerCharacterForBattle.name);
+                // 상대방이 히든 캐릭터인지 확인
+                const opponentCharacter = opponentCharacterForBattle;
+                const isHiddenCharacter = opponentCharacter && opponentCharacter.isHidden === true;
+                const bonusLuna = isHiddenCharacter ? (opponentCharacter.lunaReward || 0) : 0;
+                
+                console.log('상대방 캐릭터 정보:', {
+                    name: opponentCharacter?.name,
+                    isHidden: isHiddenCharacter,
+                    bonusLuna: bonusLuna
+                });
+                
+                // 루나 지급 처리 (보너스 루나 포함)
+                await awardLunaToCharacterOwner(
+                    playerCharacterForBattle.id || playerCharacterForBattle.character_id || playerCharacterForBattle.name,
+                    bonusLuna
+                );
                 console.log('루나 지급 완료');
             } catch (error) {
                 console.error('루나 지급 실패:', error);
@@ -5662,16 +5937,41 @@ async function findCharacterRef(characterId) {
         // 실시간 리스너의 캐시된 데이터에서 찾기 (Firebase 읽기 절약)
         if (allCharactersPool && allCharactersPool.length > 0) {
             const cachedCharacter = allCharactersPool.find(char => char.id === characterId);
-            if (cachedCharacter && cachedCharacter.userId) {
+            if (cachedCharacter) {
                 try {
-                    const charRef = doc(db, `users/${cachedCharacter.userId}/characters`, characterId);
-                    characterRefCache.set(characterId, charRef); // 참조 캐시에 저장
-                    console.log('✅ 실시간 풀에서 찾음 및 참조 캐시 저장:', charRef.path);
-                    return charRef;
+                    let charRef;
+                    // 히든 캐릭터인지 확인 (userId가 'system'이거나 isHidden이 true인 경우)
+                    if (cachedCharacter.userId === 'system' || cachedCharacter.isHidden === true) {
+                        charRef = doc(db, 'hiddenCharacters', characterId);
+                        console.log('🌟 히든 캐릭터 참조 생성:', charRef.path);
+                    } else if (cachedCharacter.userId) {
+                        charRef = doc(db, `users/${cachedCharacter.userId}/characters`, characterId);
+                        console.log('👤 일반 캐릭터 참조 생성:', charRef.path);
+                    }
+                    
+                    if (charRef) {
+                        characterRefCache.set(characterId, charRef); // 참조 캐시에 저장
+                        console.log('✅ 실시간 풀에서 찾음 및 참조 캐시 저장:', charRef.path);
+                        return charRef;
+                    }
                 } catch (refError) {
                     console.error('실시간 풀에서 참조 생성 오류:', refError);
                 }
             }
+        }
+        
+        // 히든 캐릭터 컬렉션에서 찾기
+        try {
+            const hiddenCharRef = doc(db, 'hiddenCharacters', characterId);
+            const hiddenCharDoc = await getDoc(hiddenCharRef);
+            
+            if (hiddenCharDoc.exists()) {
+                characterRefCache.set(characterId, hiddenCharRef); // 참조 캐시에 저장
+                console.log('🌟 히든 캐릭터 컬렉션에서 찾음:', hiddenCharRef.path);
+                return hiddenCharRef;
+            }
+        } catch (hiddenError) {
+            console.error('히든 캐릭터 참조 확인 오류:', hiddenError);
         }
         
         // 캐시에 없으면 현재 사용자의 캐릭터에서 찾기 (최후 수단)
@@ -7512,10 +7812,11 @@ async function addLuna(amount) {
 }
 
 // 캐릭터 소유자에게 루나 지급 함수 (오프라인 사용자 포함)
-async function awardLunaToCharacterOwner(characterId) {
+async function awardLunaToCharacterOwner(characterId, bonusLuna = 0) {
     try {
         console.log('=== 루나 지급 시작 ===');
         console.log('awardLunaToCharacterOwner 시작 - characterId:', characterId);
+        console.log('보너스 루나:', bonusLuna);
         console.log('characterId 타입:', typeof characterId);
         
         // 캐릭터의 소유자 찾기
@@ -7568,8 +7869,10 @@ async function awardLunaToCharacterOwner(characterId) {
         
         console.log('현재 루나:', currentLuna);
         
-        // 루나 1개 추가
-        const newLuna = currentLuna + 1;
+        // 기본 루나 1개 + 보너스 루나 추가
+        const totalLunaReward = 1 + bonusLuna;
+        const newLuna = currentLuna + totalLunaReward;
+        console.log('총 루나 보상:', totalLunaReward);
         console.log('새 루나 값:', newLuna);
         
         // 사용자 문서에 루나 업데이트
@@ -7578,7 +7881,7 @@ async function awardLunaToCharacterOwner(characterId) {
             luna: newLuna
         }, { merge: true });
         
-        console.log(`✅ 캐릭터 소유자 ${ownerId}에게 루나 1개 지급 완료 (${currentLuna} -> ${newLuna})`);
+        console.log(`✅ 캐릭터 소유자 ${ownerId}에게 루나 ${totalLunaReward}개 지급 완료 (${currentLuna} -> ${newLuna})`);
         
         // 현재 로그인한 사용자가 루나를 받은 경우 UI 업데이트 및 알림 표시
         if (currentUser && currentUser.uid === ownerId) {
@@ -7589,7 +7892,7 @@ async function awardLunaToCharacterOwner(characterId) {
             // 루나 지급 알림 표시
             console.log('showLunaRewardNotification 함수 호출 시작');
             try {
-                showLunaRewardNotification();
+                showLunaRewardNotification(totalLunaReward, bonusLuna > 0);
                 console.log('showLunaRewardNotification 함수 호출 완료');
             } catch (error) {
                 console.error('showLunaRewardNotification 함수 호출 중 오류:', error);
@@ -7609,11 +7912,20 @@ async function awardLunaToCharacterOwner(characterId) {
 }
 
 // 루나 지급 알림 표시 함수
-function showLunaRewardNotification() {
+function showLunaRewardNotification(totalReward = 1, isHiddenCharacter = false) {
     // 기존 알림이 있다면 제거
     const existingNotification = document.querySelector('.luna-reward-notification');
     if (existingNotification) {
         existingNotification.remove();
+    }
+    
+    // 알림 메시지 생성
+    let rewardMessage = `루나 ${totalReward}개를 획득했습니다!`;
+    let titleMessage = '전투 승리!';
+    
+    if (isHiddenCharacter) {
+        titleMessage = '✨ 히든 캐릭터 승리!';
+        rewardMessage = `특별 보상으로 루나 ${totalReward}개를 획득했습니다!`;
     }
     
     // 알림 요소 생성
@@ -7621,10 +7933,10 @@ function showLunaRewardNotification() {
     notification.className = 'luna-reward-notification';
     notification.innerHTML = `
         <div class="notification-content">
-            <div class="notification-icon">🌙</div>
+            <div class="notification-icon">${isHiddenCharacter ? '✨' : '🌙'}</div>
             <div class="notification-text">
-                <h3>전투 승리!</h3>
-                <p>루나 1개를 획득했습니다!</p>
+                <h3>${titleMessage}</h3>
+                <p>${rewardMessage}</p>
             </div>
             <button class="notification-close" onclick="this.parentElement.parentElement.remove()">&times;</button>
         </div>
@@ -8811,16 +9123,21 @@ function initializeLunaManagement() {
 // 페이지 로드 완료 시 초기화
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
-        initializeLunaDisplay();
-        initializeLunaManagement();
-        initializeDesignatedMatchModal();
-        
+    initializeLunaDisplay();
+    initializeLunaManagement();
+    initializeDesignatedMatchModal();
+    initializeAdminTabs();
+    initializeHiddenCharacterEditModal();
+    initializeConceptGeneration();
+    
 
-    });
+});
 } else {
     initializeLunaDisplay();
     initializeLunaManagement();
     initializeDesignatedMatchModal();
+    initializeAdminTabs();
+    initializeConceptGeneration();
 }
 
 // ===== 지정매칭 기능 =====
@@ -9573,7 +9890,45 @@ function showPageGenerationModal() {
         
         // 모달 표시
         modal.classList.remove('hidden');
-        modal.style.display = 'block';
+        document.body.style.overflow = 'hidden';
+        
+        // 닫기 버튼 이벤트 리스너
+        const closeBtn = modal.querySelector('.close-btn');
+        if (closeBtn) {
+            closeBtn.onclick = function() {
+                modal.classList.add('hidden');
+                document.body.style.overflow = '';
+            };
+        }
+        
+        // 모달 외부 클릭 시 닫기
+        modal.onclick = function(event) {
+            if (event.target === modal) {
+                modal.classList.add('hidden');
+                document.body.style.overflow = '';
+            }
+        };
+        
+        // 모달 내 버튼 이벤트 리스너
+        const editBtn = modal.querySelector('.edit-btn');
+        const deleteBtn = modal.querySelector('.delete-btn');
+        
+        if (editBtn) {
+            editBtn.onclick = function(e) {
+                e.stopPropagation();
+                const characterId = editBtn.getAttribute('data-character-id');
+                editHiddenCharacter(characterId);
+            };
+        }
+        
+        if (deleteBtn) {
+            deleteBtn.onclick = function(e) {
+                e.stopPropagation();
+                const characterId = deleteBtn.getAttribute('data-character-id');
+                const characterName = deleteBtn.getAttribute('data-character-name');
+                deleteHiddenCharacter(characterId, characterName);
+            };
+        }
     }
 }
 
@@ -10746,3 +11101,1263 @@ function closeYoutubeModal() {
 }
 
 console.log('유튜브 모달 시스템 로드 완료');
+
+// ===== 히든 캐릭터 시스템 =====
+
+// 히든 캐릭터 생성
+// 히든 캐릭터용 데이터 생성 함수
+async function generateCharacterData(concept, name) {
+    const prompt = `
+        당신은 AI 캐릭터 생성기입니다. 다음 조건을 엄격히 준수하여 판타지 캐릭터를 생성해주세요.
+        
+        **중요 규칙:**
+        1. 사용자가 이름을 제공했다면 반드시 그 이름을 사용하세요.
+        2. 캐릭터의 모든 요소(클래스, 성격, 스킬)는 주어진 컨셉과 일치해야 합니다.
+        3. 이미지 프롬프트는 생성된 캐릭터의 정확한 외형과 특징을 반영해야 합니다.
+        
+        **입력 정보:**
+        - 캐릭터 이름: ${name ? `"${name}" (반드시 이 이름을 사용하세요)` : '(자유롭게 생성)'}
+        - 캐릭터 컨셉: "${concept}"
+        
+        **생성 요구사항:**
+        - 캐릭터의 클래스, 성격, 배경 이야기는 주어진 컨셉과 완벽히 일치해야 합니다.
+        - 공격 스킬 2개와 방어 스킬 2개를 캐릭터의 클래스와 컨셉에 맞게 설계하세요.
+        - 이미지 프롬프트는 생성된 캐릭터의 클래스, 성격, 외형적 특징을 정확히 묘사해야 합니다.
+        - 배경 이야기는 캐릭터의 탄생 배경과 상세 정보를 포함하여 3-4문장으로 작성하세요.
+        - 성격은 핵심 특성 2-3가지로 요약하세요.
+        - 스킬 설명은 각각 정확히 2문장으로 작성하되, 자연스럽고 적절한 길이로 작성하세요.
+        - 스킬의 효과와 특징을 명확하고 흥미롭게 설명해주세요.
+        
+        결과는 반드시 다음 JSON 형식에 맞춰서 한글로 작성해주세요. image_prompt만 영어로 작성해주세요:
+        {
+          "name": "${name || '캐릭터 이름'}",
+          "class": "캐릭터 클래스",
+          "personality": "캐릭터 성격",
+          "story": "캐릭터의 탄생 배경과 상세 정보",
+          "background_story": "캐릭터의 배경 스토리 - 캐릭터가 살아온 환경, 경험, 과거의 중요한 사건들에 대한 상세한 이야기 (4-5문장)",
+          "origin_story": "캐릭터의 탄생 스토리 - 어떻게 태어났고 어떤 운명을 가지고 있는지에 대한 흥미진진한 이야기 (4-5문장)",
+          "attack_skills": [
+            { "name": "공격 스킬1 이름", "description": "공격 스킬1 설명" },
+            { "name": "공격 스킬2 이름", "description": "공격 스킬2 설명" }
+          ],
+          "defense_skills": [
+            { "name": "방어 스킬1 이름", "description": "방어 스킬1 설명" },
+            { "name": "방어 스킬2 이름", "description": "방어 스킬2 설명" }
+          ],
+          "image_prompt": "Detailed English prompt for AI image generation that accurately depicts the character's class, appearance, and concept"
+        }
+    `;
+    
+    const result = await generateWithFallback(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    const jsonString = text.match(/\{.*\}/s)[0];
+    const parsedData = JSON.parse(jsonString);
+    
+    // 사용자가 입력한 이름이 있다면 강제로 적용
+    if (name && name.trim()) {
+        parsedData.name = name.trim();
+    }
+    
+    // 필수 필드 검증
+    if (!parsedData.name || !parsedData.class || !parsedData.image_prompt) {
+        throw new Error('생성된 캐릭터 데이터에 필수 정보가 누락되었습니다.');
+    }
+    
+    // 기본 속성 추가
+    parsedData.wins = 0;
+    parsedData.losses = 0;
+    parsedData.createdAt = new Date().toISOString();
+    parsedData.appearance_prompt = parsedData.image_prompt;
+    
+    return parsedData;
+}
+
+async function createHiddenCharacter() {
+    const name = document.getElementById('hidden-char-name').value.trim();
+    const concept = document.getElementById('hidden-char-concept').value.trim();
+    const matchingProbability = parseFloat(document.getElementById('hidden-char-probability').value);
+    const lunaReward = parseInt(document.getElementById('hidden-char-reward').value);
+    
+    if (!name || !concept) {
+        alert('캐릭터 이름과 컨셉을 입력해주세요.');
+        return;
+    }
+    
+    if (isNaN(matchingProbability) || matchingProbability < 0 || matchingProbability > 100) {
+        alert('매칭 확률은 0-100 사이의 숫자여야 합니다.');
+        return;
+    }
+    
+    if (isNaN(lunaReward) || lunaReward < 0) {
+        alert('루나 보상은 0 이상의 숫자여야 합니다.');
+        return;
+    }
+    
+    // 로딩 상태 표시
+    const createBtn = document.getElementById('create-hidden-character-btn');
+    const loadingIndicator = document.getElementById('hidden-loading-indicator');
+    const originalText = createBtn.textContent;
+    
+    try {
+        
+        createBtn.disabled = true;
+        createBtn.textContent = '생성 중...';
+        loadingIndicator.classList.remove('hidden');
+        
+        console.log('히든 캐릭터 생성 시작:', { name, concept, matchingProbability, lunaReward });
+        
+        // 히든 캐릭터 데이터 생성 (일반 캐릭터와 동일한 로직 사용)
+        const characterData = await generateCharacterData(concept, name);
+        
+        // 이미지 생성 (일반 캐릭터와 동일한 방식)
+        const imageUrl = await generateAndUploadImage(characterData.image_prompt, name, characterData.class, concept);
+        characterData.imageUrl = imageUrl;
+        
+        // 외형 프롬프트를 별도로 저장 (전투 이미지 생성에 활용)
+        characterData.appearance_prompt = characterData.image_prompt;
+        // 강화된 프롬프트도 저장 (이미지 재생성에 활용)
+        const conceptKeywords = getConceptKeywords(concept);
+        characterData.enhanced_prompt = `${characterData.image_prompt}, ${conceptKeywords}, fantasy character portrait, ${characterData.class || 'fantasy character'}, high quality, detailed, digital art, concept art style, professional illustration, centered composition, dramatic lighting, vibrant colors, masterpiece quality, full body or portrait view`;
+        
+        // 히든 캐릭터 특수 속성 추가
+        characterData.isHidden = true;
+        characterData.matchingProbability = matchingProbability;
+        characterData.lunaReward = lunaReward;
+        characterData.userId = 'system'; // 시스템 캐릭터로 설정
+        characterData.createdAt = new Date();
+        
+        // Firebase에 저장
+        const docRef = await addDoc(collection(db, 'hiddenCharacters'), characterData);
+        console.log('히든 캐릭터 생성 완료:', docRef.id);
+        
+        // 폼 초기화
+        document.getElementById('hidden-char-name').value = '';
+        document.getElementById('hidden-char-concept').value = '';
+        document.getElementById('hidden-char-probability').value = '5';
+        document.getElementById('hidden-char-reward').value = '500';
+        
+        // 실시간으로 매칭 풀 업데이트 (새로고침 없이 즉시 적용)
+        console.log('🔄 새 히든 캐릭터 생성으로 인한 매칭 풀 실시간 업데이트 시작...');
+        await refreshMatchingPoolWithHiddenCharacters();
+        console.log('✅ 매칭 풀 실시간 업데이트 완료');
+        
+        // 히든 캐릭터 목록 새로고침
+        loadHiddenCharacters();
+        
+        alert('히든 캐릭터가 성공적으로 생성되었습니다!\n매칭 확률이 즉시 적용되었습니다.');
+        
+    } catch (error) {
+        console.error('히든 캐릭터 생성 실패:', error);
+        alert('히든 캐릭터 생성에 실패했습니다: ' + error.message);
+    } finally {
+        // 버튼 상태 복원
+        const createBtn = document.getElementById('create-hidden-character-btn');
+        const loadingIndicator = document.getElementById('hidden-loading-indicator');
+        
+        createBtn.disabled = false;
+        createBtn.textContent = originalText;
+        loadingIndicator.classList.add('hidden');
+    }
+}
+
+// 히든 캐릭터 목록 로드
+async function loadHiddenCharacters() {
+    try {
+        const hiddenCharactersRef = collection(db, 'hiddenCharacters');
+        const snapshot = await getDocs(hiddenCharactersRef);
+        
+        const hiddenCharactersList = document.getElementById('hidden-characters-grid');
+        if (!hiddenCharactersList) return;
+        
+        if (snapshot.empty) {
+            hiddenCharactersList.innerHTML = '<div class="no-hidden-characters">생성된 히든 캐릭터가 없습니다.</div>';
+            return;
+        }
+        
+        const hiddenCharacters = [];
+        snapshot.forEach(doc => {
+            hiddenCharacters.push({ id: doc.id, ...doc.data() });
+        });
+        
+        // 생성일 기준 내림차순 정렬
+        hiddenCharacters.sort((a, b) => {
+            const dateA = a.createdAt?.toDate() || new Date(0);
+            const dateB = b.createdAt?.toDate() || new Date(0);
+            return dateB - dateA;
+        });
+        
+        hiddenCharactersList.innerHTML = hiddenCharacters.map(character => `
+            <div class="character-main-card hidden-character-small" data-character-id="${character.id}">
+                <div class="character-image-container">
+                    <img src="${character.imageUrl || 'https://placehold.co/100x100/333/FFF?text=?'}" alt="${character.name}" class="character-image" loading="lazy">
+                    <div class="hidden-character-badge">✨</div>
+                    <div class="character-overlay">
+                        <div class="character-actions">
+                            <button class="action-btn edit-btn" data-character-id="${character.id}" title="편집">
+                                ✏️
+                            </button>
+                            <button class="action-btn delete-btn" data-character-id="${character.id}" data-character-name="${character.name}" title="삭제">
+                                🗑️
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="character-info">
+                    <h3 class="character-name">${character.name}</h3>
+                    <p class="character-class">${character.matchingProbability}% • ${character.lunaReward} 루나</p>
+                    <div class="character-stats">
+                        <span class="win-rate">${calculateWinRate(character)}%</span>
+                        <span class="record"><span class="wins">${character.wins || 0}승</span> <span class="losses">${character.losses || 0}패</span></span>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+        
+        // 기존 이벤트 리스너 제거 후 새로 추가 (중복 방지)
+        const existingListener = hiddenCharactersList.getAttribute('data-listener-added');
+        if (!existingListener) {
+            console.log('히든 캐릭터 목록 이벤트 리스너 추가됨');
+            hiddenCharactersList.setAttribute('data-listener-added', 'true');
+            hiddenCharactersList.addEventListener('click', (e) => {
+            console.log('히든 캐릭터 목록 클릭 이벤트 발생:', e.target);
+            const target = e.target;
+            const card = target.closest('.hidden-character-small');
+            
+            console.log('클릭된 카드:', card);
+            if (!card) {
+                console.log('카드를 찾을 수 없음');
+                return;
+            }
+            
+            const characterId = card.getAttribute('data-character-id');
+            console.log('캐릭터 ID:', characterId);
+            
+            // 편집 버튼 클릭
+            const editBtn = target.closest('.edit-btn');
+            console.log('편집 버튼 확인:', editBtn);
+            if (editBtn) {
+                e.stopPropagation();
+                console.log('편집 버튼 클릭됨, 캐릭터 ID:', characterId);
+                console.log('editHiddenCharacter 함수 호출 시작');
+                try {
+                    editHiddenCharacter(characterId);
+                    console.log('editHiddenCharacter 함수 호출 완료');
+                } catch (error) {
+                    console.error('editHiddenCharacter 함수 호출 중 오류:', error);
+                }
+                return;
+            }
+            
+            // 삭제 버튼 클릭
+            if (target.closest('.delete-btn')) {
+                e.stopPropagation();
+                const characterName = target.closest('.delete-btn').getAttribute('data-character-name');
+                console.log('삭제 버튼 클릭됨, 캐릭터 ID:', characterId, '이름:', characterName);
+                deleteHiddenCharacter(characterId, characterName);
+                return;
+            }
+            
+            // 카드 클릭 (모달 표시)
+            if (!target.closest('.action-btn')) {
+                console.log('카드 클릭됨, 캐릭터 ID:', characterId);
+                showHiddenCharacterDetail(characterId);
+            }
+            });
+        }
+        
+    } catch (error) {
+        console.error('히든 캐릭터 목록 로드 실패:', error);
+        const hiddenCharactersList = document.getElementById('hidden-characters-grid');
+        if (hiddenCharactersList) {
+            hiddenCharactersList.innerHTML = '<div class="error-message">히든 캐릭터 목록을 불러올 수 없습니다.</div>';
+        }
+    }
+}
+
+// 히든 캐릭터 상세 정보 모달 표시
+async function showHiddenCharacterDetail(characterId) {
+    console.log('showHiddenCharacterDetail 호출됨, 캐릭터 ID:', characterId);
+    
+    try {
+        const hiddenCharacterRef = doc(db, 'hiddenCharacters', characterId);
+        const hiddenCharacterDoc = await getDoc(hiddenCharacterRef);
+        
+        if (!hiddenCharacterDoc.exists()) {
+            alert('히든 캐릭터를 찾을 수 없습니다.');
+            return;
+        }
+        
+        const character = { id: hiddenCharacterDoc.id, ...hiddenCharacterDoc.data() };
+        
+        // 스킬 정보 처리
+        let allSkills = [];
+        if (character.attack_skills) {
+            allSkills.push(...character.attack_skills.map(skill => ({...skill, type: '공격'})));
+        }
+        if (character.defense_skills) {
+            allSkills.push(...character.defense_skills.map(skill => ({...skill, type: '방어'})));
+        }
+        
+        const skillsHtml = allSkills.length > 0 ? 
+            allSkills.map(skill => `
+                <div class="skill-item">
+                    <h4>${skill.name} <span class="skill-type">(${skill.type})</span></h4>
+                    <p>${skill.description}</p>
+                </div>
+            `).join('') : '<p>스킬 정보가 없습니다.</p>';
+        
+        // 히든 캐릭터 상세 정보 모달이 없으면 생성
+        let modal = document.getElementById('hidden-character-detail-modal');
+        if (!modal) {
+            const modalHtml = `
+                <div id="hidden-character-detail-modal" class="modal hidden">
+                    <div class="modal-content large">
+                        <span class="close-btn">&times;</span>
+                        <div id="hidden-character-detail-content">
+                            <!-- 히든 캐릭터 상세 정보가 여기에 표시됩니다 -->
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+            modal = document.getElementById('hidden-character-detail-modal');
+        }
+        
+        const detailContent = document.getElementById('hidden-character-detail-content');
+        const imageUrl = character.imageUrl || 'https://placehold.co/300x300/333/FFF?text=?';
+        
+        detailContent.innerHTML = `
+            <div class="character-detail-container">
+                <div class="character-detail-header">
+                    <div class="character-image-container">
+                        <img src="${imageUrl}" alt="${character.name}" class="character-image" 
+                             onerror="this.src='https://placehold.co/300x300/333/FFF?text=?'"
+                             onclick="openImageModal('${imageUrl}', '${character.name}')"
+                             style="cursor: pointer;">
+                        <div class="hidden-character-badge">✨ 히든</div>
+                    </div>
+                    <div class="character-basic-info">
+                        <h2>${character.name}</h2>
+                        <div class="character-rank">
+                            <span class="rank-badge hidden-rank">히든 캐릭터</span>
+                        </div>
+                        <div class="character-record">
+                            <div class="record-item">
+                                <span class="record-label">등장 확률:</span>
+                                <span class="record-value">${character.matchingProbability}%</span>
+                            </div>
+                            <div class="record-item">
+                                <span class="record-label">루나 보상:</span>
+                                <span class="record-value">${character.lunaReward} 루나</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="character-detail-body">
+                    <div class="character-story">
+                        <h3>배경 스토리</h3>
+                        <p>${character.background_story || '배경 스토리가 없습니다.'}</p>
+                    </div>
+                    
+                    <div class="character-story">
+                        <h3>탄생 스토리</h3>
+                        <p>${character.origin_story || '탄생 스토리가 없습니다.'}</p>
+                    </div>
+                    
+                    <div class="character-skills">
+                        <h3>스킬</h3>
+                        <div class="skills-container">
+                            ${skillsHtml}
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="character-detail-actions">
+                    <button class="action-btn edit-btn" data-character-id="${character.id}">
+                        ✏️ 편집
+                    </button>
+                    <button class="action-btn delete-btn" data-character-id="${character.id}" data-character-name="${character.name}">
+                        🗑️ 삭제
+                    </button>
+                </div>
+            </div>
+        `;
+        
+        // 모달 표시
+        modal.classList.remove('hidden');
+        
+        // 닫기 버튼 이벤트 리스너 추가
+        const closeBtn = modal.querySelector('.close-btn');
+        if (closeBtn) {
+            closeBtn.onclick = function() {
+                modal.classList.add('hidden');
+            };
+        }
+        
+        // 모달 외부 클릭 시 닫기
+        modal.onclick = function(e) {
+            if (e.target === modal) {
+                modal.classList.add('hidden');
+            }
+        };
+        
+        // 편집/삭제 버튼 이벤트 리스너 추가
+        const editBtn = modal.querySelector('.edit-btn');
+        const deleteBtn = modal.querySelector('.delete-btn');
+        
+        if (editBtn) {
+            editBtn.onclick = function() {
+                const characterId = this.getAttribute('data-character-id');
+                modal.classList.add('hidden'); // 상세 모달 닫기
+                editHiddenCharacter(characterId);
+            };
+        }
+        
+        if (deleteBtn) {
+            deleteBtn.onclick = function() {
+                const characterId = this.getAttribute('data-character-id');
+                const characterName = this.getAttribute('data-character-name');
+                modal.classList.add('hidden'); // 상세 모달 닫기
+                deleteHiddenCharacter(characterId, characterName);
+            };
+        }
+        
+    } catch (error) {
+        console.error('Error showing hidden character detail:', error);
+        alert('히든 캐릭터 상세 정보를 불러오는 중 오류가 발생했습니다.');
+    }
+}
+
+// 히든 캐릭터 편집
+async function editHiddenCharacter(characterId) {
+    try {
+        const hiddenCharacterRef = doc(db, 'hiddenCharacters', characterId);
+        const hiddenCharacterDoc = await getDoc(hiddenCharacterRef);
+        
+        if (!hiddenCharacterDoc.exists()) {
+            alert('히든 캐릭터를 찾을 수 없습니다.');
+            return;
+        }
+        
+        const character = { id: hiddenCharacterDoc.id, ...hiddenCharacterDoc.data() };
+        
+        // 편집 모달에 데이터 채우기
+        currentEditingCharacterId = character.id;
+        document.getElementById('edit-hidden-name').value = character.name || '';
+        document.getElementById('edit-hidden-concept').value = character.concept || '';
+        document.getElementById('edit-hidden-probability').value = character.matchingProbability || 5;
+        document.getElementById('edit-hidden-reward').value = character.lunaReward || 100;
+        
+        // 이미지 미리보기
+        const imagePreview = document.getElementById('current-hidden-image');
+        if (imagePreview) {
+            imagePreview.src = character.imageUrl || 'https://placehold.co/200x200/333/FFF?text=?';
+        }
+        
+        // 스토리 탭 내용
+        document.getElementById('edit-hidden-background').value = character.background_story || '';
+        document.getElementById('edit-hidden-birth').value = character.origin_story || '';
+        
+        // 스킬 목록 표시
+        displayEditHiddenSkills(character);
+        
+        // 히든 캐릭터 상세 모달 닫기
+        const detailModal = document.getElementById('hidden-character-detail-modal');
+        if (detailModal) {
+            detailModal.classList.add('hidden');
+        }
+        
+        // 편집 모달 표시
+        const modal = document.getElementById('hidden-character-edit-modal');
+        if (modal) {
+            modal.classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
+            
+            // 기본 정보 탭 활성화
+            showEditHiddenTab('basic');
+            
+            // 편집 모달 이벤트 리스너 재초기화
+            initializeHiddenCharacterEditModal();
+        }
+        
+    } catch (error) {
+        console.error('히든 캐릭터 편집 모달 열기 실패:', error);
+        alert('히든 캐릭터 정보를 불러올 수 없습니다.');
+    }
+}
+
+// 히든 캐릭터 편집 모달의 탭 전환
+function showEditHiddenTab(tabName) {
+    // 모든 탭 버튼 비활성화
+    document.querySelectorAll('.hidden-edit-tab').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    
+    // 모든 탭 패널 숨기기
+    document.querySelectorAll('.hidden-edit-tab-content').forEach(panel => {
+        panel.classList.add('hidden');
+    });
+    
+    // 선택된 탭 활성화
+    const selectedTabBtn = document.getElementById(`hidden-${tabName}-tab`);
+    const selectedTabPanel = document.getElementById(`hidden-${tabName}-content`);
+    
+    if (selectedTabBtn) selectedTabBtn.classList.add('active');
+    if (selectedTabPanel) selectedTabPanel.classList.remove('hidden');
+}
+
+// 히든 캐릭터 편집 스킬 표시
+function displayEditHiddenSkills(character) {
+    const skillsList = document.getElementById('hidden-skills-list');
+    
+    if (skillsList) {
+        const attackSkillsHtml = (character.attack_skills || []).map((skill, index) => `
+            <div class="skill-item attack-skill" data-skill-type="attack" data-skill-index="${index}">
+                <div class="skill-header">
+                    <strong>🗡️ 공격 스킬 ${index + 1}</strong>
+                    <button type="button" class="edit-skill-btn" onclick="editSkill('attack', ${index})">✏️</button>
+                </div>
+                <div class="skill-content">
+                    <div class="skill-name-display">${skill.name}</div>
+                    <div class="skill-description-display">${skill.description}</div>
+                    <div class="skill-edit-form hidden">
+                        <input type="text" class="skill-name-input" value="${skill.name}" placeholder="스킬 이름">
+                        <textarea class="skill-description-input" placeholder="스킬 설명">${skill.description}</textarea>
+                        <div class="skill-edit-buttons">
+                            <button type="button" class="save-skill-btn" onclick="saveSkillEdit('attack', ${index})">저장</button>
+                            <button type="button" class="cancel-skill-btn" onclick="cancelSkillEdit('attack', ${index})">취소</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `).join('') || '<div class="no-skills">공격 스킬이 없습니다.</div>';
+        
+        const defenseSkillsHtml = (character.defense_skills || []).map((skill, index) => `
+            <div class="skill-item defense-skill" data-skill-type="defense" data-skill-index="${index}">
+                <div class="skill-header">
+                    <strong>🛡️ 방어 스킬 ${index + 1}</strong>
+                    <button type="button" class="edit-skill-btn" onclick="editSkill('defense', ${index})">✏️</button>
+                </div>
+                <div class="skill-content">
+                    <div class="skill-name-display">${skill.name}</div>
+                    <div class="skill-description-display">${skill.description}</div>
+                    <div class="skill-edit-form hidden">
+                        <input type="text" class="skill-name-input" value="${skill.name}" placeholder="스킬 이름">
+                        <textarea class="skill-description-input" placeholder="스킬 설명">${skill.description}</textarea>
+                        <div class="skill-edit-buttons">
+                            <button type="button" class="save-skill-btn" onclick="saveSkillEdit('defense', ${index})">저장</button>
+                            <button type="button" class="cancel-skill-btn" onclick="cancelSkillEdit('defense', ${index})">취소</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `).join('') || '<div class="no-skills">방어 스킬이 없습니다.</div>';
+        
+        skillsList.innerHTML = `
+            <div class="skills-section">
+                <h4>공격 스킬</h4>
+                ${attackSkillsHtml}
+            </div>
+            <div class="skills-section">
+                <h4>방어 스킬</h4>
+                ${defenseSkillsHtml}
+            </div>
+        `;
+    }
+}
+
+// 현재 편집 중인 히든 캐릭터 ID
+let currentEditingCharacterId = null;
+let currentEditingCharacterData = null;
+
+// 스킬 편집 함수들
+function editSkill(skillType, skillIndex) {
+    const skillItem = document.querySelector(`[data-skill-type="${skillType}"][data-skill-index="${skillIndex}"]`);
+    if (skillItem) {
+        const displayElements = skillItem.querySelectorAll('.skill-name-display, .skill-description-display');
+        const editForm = skillItem.querySelector('.skill-edit-form');
+        const editBtn = skillItem.querySelector('.edit-skill-btn');
+        
+        displayElements.forEach(el => el.classList.add('hidden'));
+        editForm.classList.remove('hidden');
+        editBtn.style.display = 'none';
+    }
+}
+
+// 전역 스코프에 함수 노출
+window.editSkill = editSkill;
+
+function cancelSkillEdit(skillType, skillIndex) {
+    const skillItem = document.querySelector(`[data-skill-type="${skillType}"][data-skill-index="${skillIndex}"]`);
+    if (skillItem) {
+        const displayElements = skillItem.querySelectorAll('.skill-name-display, .skill-description-display');
+        const editForm = skillItem.querySelector('.skill-edit-form');
+        const editBtn = skillItem.querySelector('.edit-skill-btn');
+        
+        displayElements.forEach(el => el.classList.remove('hidden'));
+        editForm.classList.add('hidden');
+        editBtn.style.display = 'inline-block';
+        
+        // 입력값 원래대로 복원
+        const nameInput = editForm.querySelector('.skill-name-input');
+        const descInput = editForm.querySelector('.skill-description-input');
+        const nameDisplay = skillItem.querySelector('.skill-name-display');
+        const descDisplay = skillItem.querySelector('.skill-description-display');
+        
+        if (nameInput && nameDisplay) nameInput.value = nameDisplay.textContent;
+        if (descInput && descDisplay) descInput.value = descDisplay.textContent;
+    }
+}
+
+// 전역 스코프에 함수 노출
+window.cancelSkillEdit = cancelSkillEdit;
+
+async function saveSkillEdit(skillType, skillIndex) {
+    const skillItem = document.querySelector(`[data-skill-type="${skillType}"][data-skill-index="${skillIndex}"]`);
+    if (!skillItem) return;
+    
+    const nameInput = skillItem.querySelector('.skill-name-input');
+    const descInput = skillItem.querySelector('.skill-description-input');
+    const nameDisplay = skillItem.querySelector('.skill-name-display');
+    const descDisplay = skillItem.querySelector('.skill-description-display');
+    
+    const newName = nameInput.value.trim();
+    const newDescription = descInput.value.trim();
+    
+    if (!newName || !newDescription) {
+        alert('스킬 이름과 설명을 모두 입력해주세요.');
+        return;
+    }
+    
+    try {
+        // Firebase에서 현재 캐릭터 데이터 가져오기
+        const hiddenCharacterRef = doc(db, 'hiddenCharacters', currentEditingCharacterId);
+        const hiddenCharacterDoc = await getDoc(hiddenCharacterRef);
+        
+        if (!hiddenCharacterDoc.exists()) {
+            alert('캐릭터를 찾을 수 없습니다.');
+            return;
+        }
+        
+        const characterData = hiddenCharacterDoc.data();
+        
+        // 스킬 데이터 업데이트
+        if (skillType === 'attack' && characterData.attack_skills) {
+            characterData.attack_skills[skillIndex] = {
+                name: newName,
+                description: newDescription
+            };
+        } else if (skillType === 'defense' && characterData.defense_skills) {
+            characterData.defense_skills[skillIndex] = {
+                name: newName,
+                description: newDescription
+            };
+        }
+        
+        // Firebase 업데이트
+        await updateDoc(hiddenCharacterRef, {
+            attack_skills: characterData.attack_skills,
+            defense_skills: characterData.defense_skills,
+            updatedAt: new Date()
+        });
+        
+        // UI 업데이트
+        nameDisplay.textContent = newName;
+        descDisplay.textContent = newDescription;
+        
+        // 편집 모드 종료
+        cancelSkillEdit(skillType, skillIndex);
+        
+        console.log('스킬 편집 완료:', { skillType, skillIndex, newName, newDescription });
+        
+    } catch (error) {
+        console.error('스킬 저장 실패:', error);
+        alert('스킬 저장에 실패했습니다: ' + error.message);
+    }
+}
+
+// 전역 스코프에 함수 노출
+window.saveSkillEdit = saveSkillEdit;
+
+// 히든 캐릭터 저장
+async function saveHiddenCharacter() {
+    const characterId = currentEditingCharacterId;
+    const name = document.getElementById('edit-hidden-name').value.trim();
+    const concept = document.getElementById('edit-hidden-concept').value.trim();
+    const matchingProbability = parseFloat(document.getElementById('edit-hidden-probability').value);
+    const lunaReward = parseInt(document.getElementById('edit-hidden-reward').value);
+    const backgroundStory = document.getElementById('edit-hidden-background').value.trim();
+    const originStory = document.getElementById('edit-hidden-birth').value.trim();
+    
+    if (!name || !concept) {
+        alert('캐릭터 이름과 컨셉을 입력해주세요.');
+        return;
+    }
+    
+    if (isNaN(matchingProbability) || matchingProbability < 0 || matchingProbability > 100) {
+        alert('매칭 확률은 0-100 사이의 숫자여야 합니다.');
+        return;
+    }
+    
+    if (isNaN(lunaReward) || lunaReward < 0) {
+        alert('루나 보상은 0 이상의 숫자여야 합니다.');
+        return;
+    }
+    
+    const saveBtn = document.getElementById('save-hidden-character-btn');
+    let originalText = '저장';
+    
+    try {
+        if (saveBtn) {
+            originalText = saveBtn.textContent;
+            saveBtn.disabled = true;
+            saveBtn.textContent = '저장 중...';
+        }
+        
+        const hiddenCharacterRef = doc(db, 'hiddenCharacters', characterId);
+        
+        const updateData = {
+            name: name,
+            concept: concept,
+            matchingProbability: matchingProbability,
+            lunaReward: lunaReward,
+            background_story: backgroundStory,
+            origin_story: originStory,
+            updatedAt: new Date()
+        };
+        
+        await updateDoc(hiddenCharacterRef, updateData);
+        
+        console.log('히든 캐릭터 업데이트 완료:', characterId);
+        
+        // 실시간으로 매칭 풀 업데이트 (새로고침 없이 즉시 적용)
+        console.log('🔄 히든 캐릭터 확률 변경으로 인한 매칭 풀 실시간 업데이트 시작...');
+        await refreshMatchingPoolWithHiddenCharacters();
+        console.log('✅ 매칭 풀 실시간 업데이트 완료');
+        
+        // 모달 닫기
+        closeEditHiddenCharacterModal();
+        
+        // 목록 새로고침
+        loadHiddenCharacters();
+        
+        alert('히든 캐릭터가 성공적으로 수정되었습니다!\n매칭 확률이 즉시 적용되었습니다.');
+        
+    } catch (error) {
+        console.error('히든 캐릭터 저장 실패:', error);
+        alert('히든 캐릭터 저장에 실패했습니다: ' + error.message);
+    } finally {
+        if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = originalText;
+        }
+    }
+}
+
+// 히든 캐릭터 삭제
+async function deleteHiddenCharacter(characterId, characterName) {
+    if (!confirm(`정말로 히든 캐릭터 "${characterName}"을(를) 삭제하시겠습니까?\n\n이 작업은 되돌릴 수 없습니다.`)) {
+        return;
+    }
+    
+    try {
+        const hiddenCharacterRef = doc(db, 'hiddenCharacters', characterId);
+        await deleteDoc(hiddenCharacterRef);
+        
+        console.log('히든 캐릭터 삭제 완료:', characterId);
+        
+        // 실시간으로 매칭 풀 업데이트 (삭제된 히든 캐릭터 제거)
+        console.log('🔄 히든 캐릭터 삭제로 인한 매칭 풀 실시간 업데이트 시작...');
+        await refreshMatchingPoolWithHiddenCharacters();
+        console.log('✅ 매칭 풀 실시간 업데이트 완료');
+        
+        // 목록 새로고침
+        loadHiddenCharacters();
+        
+        alert('히든 캐릭터가 성공적으로 삭제되었습니다.\n매칭 풀에서도 즉시 제거되었습니다.');
+        
+    } catch (error) {
+        console.error('히든 캐릭터 삭제 실패:', error);
+        alert('히든 캐릭터 삭제에 실패했습니다: ' + error.message);
+    }
+}
+
+// 히든 캐릭터 편집 모달 닫기
+function closeEditHiddenCharacterModal() {
+    const modal = document.getElementById('hidden-character-edit-modal');
+    if (modal) {
+        modal.classList.add('hidden');
+        document.body.style.overflow = '';
+    }
+}
+
+// 히든 캐릭터 편집 모달 초기화
+function initializeHiddenCharacterEditModal() {
+    // 탭 버튼 이벤트 리스너 (기존 리스너 제거 후 재추가)
+    const basicTab = document.getElementById('hidden-basic-tab');
+    const imageTab = document.getElementById('hidden-image-tab');
+    const storyTab = document.getElementById('hidden-story-tab');
+    const skillsTab = document.getElementById('hidden-skills-tab');
+    
+    if (basicTab) {
+        basicTab.replaceWith(basicTab.cloneNode(true));
+        document.getElementById('hidden-basic-tab').addEventListener('click', () => showEditHiddenTab('basic'));
+    }
+    if (imageTab) {
+        imageTab.replaceWith(imageTab.cloneNode(true));
+        document.getElementById('hidden-image-tab').addEventListener('click', () => showEditHiddenTab('image'));
+    }
+    if (storyTab) {
+        storyTab.replaceWith(storyTab.cloneNode(true));
+        document.getElementById('hidden-story-tab').addEventListener('click', () => showEditHiddenTab('story'));
+    }
+    if (skillsTab) {
+        skillsTab.replaceWith(skillsTab.cloneNode(true));
+        document.getElementById('hidden-skills-tab').addEventListener('click', () => showEditHiddenTab('skills'));
+    }
+    
+    // 모달 닫기 버튼 (기존 리스너 제거 후 재추가)
+    const closeBtn = document.getElementById('hidden-character-edit-close');
+    if (closeBtn) {
+        closeBtn.replaceWith(closeBtn.cloneNode(true));
+        document.getElementById('hidden-character-edit-close').addEventListener('click', closeEditHiddenCharacterModal);
+    }
+    
+    // 액션 버튼들 (기존 리스너 제거 후 재추가)
+    const saveBtn = document.getElementById('save-hidden-character-btn');
+    const deleteBtn = document.getElementById('delete-hidden-character-btn');
+    const cancelBtn = document.getElementById('cancel-hidden-edit-btn');
+    const regenerateImageBtn = document.getElementById('regenerate-hidden-image-btn');
+    const regenerateSkillsBtn = document.getElementById('regenerate-hidden-skills-btn');
+    
+    if (saveBtn) {
+        saveBtn.replaceWith(saveBtn.cloneNode(true));
+        document.getElementById('save-hidden-character-btn').addEventListener('click', saveHiddenCharacter);
+    }
+    
+    if (deleteBtn) {
+        deleteBtn.replaceWith(deleteBtn.cloneNode(true));
+        document.getElementById('delete-hidden-character-btn').addEventListener('click', () => {
+            if (currentEditingCharacterId) {
+                const characterName = document.getElementById('edit-hidden-name').value || '알 수 없는 캐릭터';
+                deleteHiddenCharacter(currentEditingCharacterId, characterName);
+            }
+        });
+    }
+    
+    if (cancelBtn) {
+        cancelBtn.replaceWith(cancelBtn.cloneNode(true));
+        document.getElementById('cancel-hidden-edit-btn').addEventListener('click', closeEditHiddenCharacterModal);
+    }
+    
+    if (regenerateImageBtn) {
+        regenerateImageBtn.replaceWith(regenerateImageBtn.cloneNode(true));
+        document.getElementById('regenerate-hidden-image-btn').addEventListener('click', regenerateHiddenCharacterImage);
+    }
+    
+    if (regenerateSkillsBtn) {
+        regenerateSkillsBtn.replaceWith(regenerateSkillsBtn.cloneNode(true));
+        document.getElementById('regenerate-hidden-skills-btn').addEventListener('click', regenerateHiddenCharacterSkills);
+    }
+    
+    // 이미지 업로드 처리 (기존 리스너 제거 후 재추가)
+    const imageUpload = document.getElementById('hidden-image-upload');
+    if (imageUpload) {
+        imageUpload.replaceWith(imageUpload.cloneNode(true));
+        document.getElementById('hidden-image-upload').addEventListener('change', handleHiddenImageUpload);
+    }
+    
+    // 모달 외부 클릭 시 닫기
+    const modal = document.getElementById('hidden-character-edit-modal');
+    if (modal) {
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                closeEditHiddenCharacterModal();
+            }
+        });
+    }
+}
+
+// 히든 캐릭터 이미지 재생성
+async function regenerateHiddenCharacterImage() {
+    const characterId = currentEditingCharacterId;
+    const concept = document.getElementById('edit-hidden-concept').value.trim();
+    
+    if (!concept) {
+        alert('캐릭터 컨셉을 입력해주세요.');
+        return;
+    }
+    
+    try {
+        const regenBtn = document.querySelector('.regen-hidden-image-btn');
+        const originalText = regenBtn.textContent;
+        regenBtn.disabled = true;
+        regenBtn.textContent = '생성 중...';
+        
+        // 이미지 생성
+        const imageUrl = await generateCharacterImage(concept);
+        
+        if (imageUrl) {
+            // 미리보기 업데이트
+            const imagePreview = document.getElementById('current-hidden-image');
+            if (imagePreview) {
+                imagePreview.src = imageUrl;
+            }
+            
+            // Firebase에 이미지 URL 업데이트
+            const hiddenCharacterRef = doc(db, 'hiddenCharacters', characterId);
+            await updateDoc(hiddenCharacterRef, {
+                imageUrl: imageUrl,
+                updatedAt: new Date()
+            });
+            
+            alert('이미지가 성공적으로 재생성되었습니다!');
+        }
+        
+    } catch (error) {
+        console.error('히든 캐릭터 이미지 재생성 실패:', error);
+        alert('이미지 재생성에 실패했습니다: ' + error.message);
+    } finally {
+        const regenBtn = document.querySelector('.regen-hidden-image-btn');
+        regenBtn.disabled = false;
+        regenBtn.textContent = originalText;
+    }
+}
+
+// 히든 캐릭터 스킬 재생성
+async function regenerateHiddenCharacterSkills() {
+    const characterId = currentEditingCharacterId;
+    const name = document.getElementById('edit-hidden-name').value.trim();
+    const concept = document.getElementById('edit-hidden-concept').value.trim();
+    
+    if (!name || !concept) {
+        alert('캐릭터 이름과 컨셉을 입력해주세요.');
+        return;
+    }
+    
+    try {
+        const regenBtn = document.querySelector('.regen-hidden-skills-btn');
+        const originalText = regenBtn.textContent;
+        regenBtn.disabled = true;
+        regenBtn.textContent = '생성 중...';
+        
+        // 스킬 생성
+        const characterData = await generateCharacterData(concept, name);
+        
+        if (characterData.attack_skills && characterData.defense_skills) {
+            // Firebase에 스킬 업데이트
+            const hiddenCharacterRef = doc(db, 'hiddenCharacters', characterId);
+            await updateDoc(hiddenCharacterRef, {
+                attack_skills: characterData.attack_skills,
+                defense_skills: characterData.defense_skills,
+                updatedAt: new Date()
+            });
+            
+            // 스킬 목록 표시 업데이트
+            displayEditHiddenSkills({
+                attack_skills: characterData.attack_skills,
+                defense_skills: characterData.defense_skills
+            });
+            
+            alert('스킬이 성공적으로 재생성되었습니다!');
+        }
+        
+    } catch (error) {
+        console.error('히든 캐릭터 스킬 재생성 실패:', error);
+        alert('스킬 재생성에 실패했습니다: ' + error.message);
+    } finally {
+        const regenBtn = document.querySelector('.regen-hidden-skills-btn');
+        regenBtn.disabled = false;
+        regenBtn.textContent = originalText;
+    }
+}
+
+// 관리자 탭 초기화
+function initializeAdminTabs() {
+    const generalAdminTab = document.getElementById('general-admin-tab');
+    const hiddenCharacterTab = document.getElementById('hidden-character-tab');
+    const createHiddenCharacterBtn = document.getElementById('create-hidden-character-btn');
+    
+    if (generalAdminTab) {
+        generalAdminTab.addEventListener('click', () => showAdminTab('general'));
+    }
+    
+    if (hiddenCharacterTab) {
+        hiddenCharacterTab.addEventListener('click', () => showAdminTab('hidden-characters'));
+    }
+    
+    if (createHiddenCharacterBtn) {
+        createHiddenCharacterBtn.addEventListener('click', createHiddenCharacter);
+        console.log('히든 캐릭터 생성 버튼 이벤트 리스너 등록 완료');
+    }
+    
+    console.log('관리자 탭 이벤트 리스너 설정 완료');
+}
+
+// 관리자 탭 전환
+function showAdminTab(tabName) {
+    console.log('관리자 탭 전환:', tabName);
+    
+    // 모든 탭 버튼 비활성화
+    document.querySelectorAll('.admin-tab').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    
+    // 모든 탭 콘텐츠 숨기기
+    document.querySelectorAll('.admin-tab-content').forEach(content => {
+        content.classList.add('hidden');
+    });
+    
+    // 선택된 탭 활성화
+    if (tabName === 'general') {
+        const generalTab = document.getElementById('general-admin-tab');
+        const generalContent = document.getElementById('general-admin-content');
+        if (generalTab) generalTab.classList.add('active');
+        if (generalContent) generalContent.classList.remove('hidden');
+    } else if (tabName === 'hidden-characters') {
+        const hiddenTab = document.getElementById('hidden-character-tab');
+        const hiddenContent = document.getElementById('hidden-character-content');
+        if (hiddenTab) hiddenTab.classList.add('active');
+        if (hiddenContent) hiddenContent.classList.remove('hidden');
+        
+        // 히든 캐릭터 목록 로드
+        loadHiddenCharacters();
+    }
+}
+
+// 히든 캐릭터 매칭 확률 적용 (정확한 확률 반영)
+function calculateHiddenCharacterInstances(hiddenCharacter, totalPoolSize) {
+    const probability = hiddenCharacter.matchingProbability;
+    
+    // 1%일 때는 정말 희귀하게, 100%일 때는 확실히 많이 나오도록 조정
+    // 1% = 100번 중 1번 정도, 5% = 20번 중 1번 정도, 100% = 매번 여러 개
+    let finalInstances = 0;
+    
+    if (probability <= 1) {
+        // 1% 이하: 매우 희귀 (1000번 중 확률만큼)
+        const chance = Math.random() * 1000;
+        if (chance < probability * 10) {
+            finalInstances = 1;
+        }
+    } else if (probability <= 5) {
+        // 1-5%: 희귀 (200번 중 확률만큼)
+        const chance = Math.random() * 200;
+        if (chance < probability * 2) {
+            finalInstances = Math.random() < 0.7 ? 1 : 2;
+        }
+    } else if (probability <= 20) {
+        // 5-20%: 보통 희귀 (100번 중 확률만큼)
+        const chance = Math.random() * 100;
+        if (chance < probability) {
+            finalInstances = Math.floor(Math.random() * 3) + 1; // 1-3개
+        }
+    } else if (probability <= 50) {
+        // 20-50%: 자주 등장
+        const chance = Math.random() * 100;
+        if (chance < probability) {
+            finalInstances = Math.floor(Math.random() * 5) + 2; // 2-6개
+        }
+    } else {
+        // 50% 이상: 거의 확실히 등장
+        const chance = Math.random() * 100;
+        if (chance < probability) {
+            finalInstances = Math.floor(probability / 10) + Math.floor(Math.random() * 5); // 확률에 비례하여 많이
+        }
+    }
+    
+    console.log(`🎲 히든 캐릭터 "${hiddenCharacter.name}" 매칭 확률 계산:`);
+    console.log(`  - 설정 확률: ${probability}%`);
+    console.log(`  - 전체 풀 크기: ${totalPoolSize}`);
+    console.log(`  - 최종 인스턴스: ${finalInstances}`);
+    console.log(`  - 확률 등급: ${probability <= 1 ? '매우 희귀' : probability <= 5 ? '희귀' : probability <= 20 ? '보통 희귀' : probability <= 50 ? '자주 등장' : '거의 확실'}`);
+    
+    return finalInstances;
+}
+
+// 히든 캐릭터를 매칭 풀에 추가하는 함수
+async function addHiddenCharactersToPool() {
+    try {
+        const hiddenCharactersRef = collection(db, 'hiddenCharacters');
+        const snapshot = await getDocs(hiddenCharactersRef);
+        
+        console.log(`📊 총 ${snapshot.size}개의 히든 캐릭터 발견`);
+        
+        const hiddenCharactersToAdd = [];
+        
+        snapshot.forEach(doc => {
+            const hiddenCharacter = { id: doc.id, ...doc.data() };
+            console.log(`🔍 히든 캐릭터 "${hiddenCharacter.name}" 확률 체크 중... (설정 확률: ${hiddenCharacter.matchingProbability}%)`);
+            
+            // 새로운 확률 기반 인스턴스 계산
+            const addCount = calculateHiddenCharacterInstances(hiddenCharacter, allCharactersPool.length);
+            
+            if (addCount > 0) {
+                for (let i = 0; i < addCount; i++) {
+                    hiddenCharactersToAdd.push({ ...hiddenCharacter, isHidden: true });
+                }
+                console.log(`✅ 히든 캐릭터 "${hiddenCharacter.name}" 매칭 풀에 ${addCount}번 추가됨 (확률 비례 적용)`);
+            } else {
+                console.log(`❌ 히든 캐릭터 "${hiddenCharacter.name}" 매칭 풀에서 제외됨 (확률: ${hiddenCharacter.matchingProbability}%)`);
+            }
+        });
+        
+        // 전역 캐릭터 풀에 히든 캐릭터 추가
+        allCharactersPool.push(...hiddenCharactersToAdd);
+        
+        console.log(`🎯 최종적으로 ${hiddenCharactersToAdd.length}개의 히든 캐릭터 인스턴스가 매칭 풀에 추가됨`);
+        console.log(`📈 현재 전체 매칭 풀 크기: ${allCharactersPool.length}개`);
+        
+        return hiddenCharactersToAdd.length;
+        
+    } catch (error) {
+        console.error('히든 캐릭터 매칭 풀 추가 실패:', error);
+        return 0;
+    }
+}
+
+// 실시간 매칭 풀 업데이트 함수 (히든 캐릭터 확률 변경 시 즉시 적용)
+async function refreshMatchingPoolWithHiddenCharacters() {
+    try {
+        console.log('🔄 매칭 풀에서 기존 히든 캐릭터 제거 중...');
+        
+        // 기존 히든 캐릭터들을 매칭 풀에서 제거
+        const originalPoolSize = allCharactersPool.length;
+        allCharactersPool = allCharactersPool.filter(character => !character.isHidden && character.id !== 'hidden');
+        const removedCount = originalPoolSize - allCharactersPool.length;
+        
+        console.log(`🗑️ ${removedCount}개의 기존 히든 캐릭터 인스턴스 제거됨`);
+        console.log(`📊 일반 캐릭터만 남은 풀 크기: ${allCharactersPool.length}개`);
+        
+        // 새로운 확률로 히든 캐릭터 다시 추가
+        console.log('🎲 새로운 확률로 히든 캐릭터 재추가 중...');
+        const addedCount = await addHiddenCharactersToPool();
+        
+        console.log(`✅ 매칭 풀 실시간 업데이트 완료!`);
+        console.log(`📈 최종 매칭 풀 크기: ${allCharactersPool.length}개 (히든 캐릭터 ${addedCount}개 포함)`);
+        
+        return true;
+        
+    } catch (error) {
+        console.error('❌ 매칭 풀 실시간 업데이트 실패:', error);
+        return false;
+    }
+}
+
+// 히든 캐릭터 이미지 업로드 처리
+function handleHiddenImageUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    // 파일 크기 체크 (5MB 제한)
+    if (file.size > 5 * 1024 * 1024) {
+        alert('파일 크기는 5MB 이하여야 합니다.');
+        return;
+    }
+    
+    // 파일 타입 체크
+    if (!file.type.startsWith('image/')) {
+        alert('이미지 파일만 업로드 가능합니다.');
+        return;
+    }
+    
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        const imagePreview = document.getElementById('current-hidden-image');
+        if (imagePreview) {
+            imagePreview.src = e.target.result;
+            imagePreview.style.display = 'block';
+        }
+    };
+    reader.readAsDataURL(file);
+}
+
+// 컨셉 자동 생성 함수
+async function generateRandomConcept() {
+    const conceptTemplates = [
+        "고대 마법을 다루는 신비로운 마법사로, 잃어버린 문명의 비밀을 간직하고 있다",
+        "어둠의 힘을 제어하는 암살자로, 그림자 속에서 적을 처치하는 전문가이다",
+        "빛의 성기사로서 정의를 수호하며, 신성한 힘으로 악을 물리친다",
+        "자연의 정령과 소통하는 드루이드로, 대지의 힘을 빌려 전투한다",
+        "용의 혈통을 이어받은 전사로, 불의 힘과 강인한 육체를 지녔다",
+        "시간을 조작하는 능력을 가진 마법사로, 과거와 미래를 넘나든다",
+        "얼음과 눈보라를 다루는 마법사로, 극한의 추위로 적을 얼려버린다",
+        "번개와 천둥을 조종하는 전사로, 하늘의 분노를 내려보낸다",
+        "영혼을 다루는 네크로맨서로, 죽은 자들을 되살려 부린다",
+        "바람의 속도로 움직이는 도적으로, 순식간에 적의 뒤를 잡는다",
+        "강철보다 단단한 방어력을 가진 수호자로, 동료들을 지키는 방패가 된다",
+        "독과 저주를 다루는 암흑 마법사로, 적을 서서히 약화시킨다",
+        "치유의 힘을 가진 성직자로, 생명력을 회복시키고 축복을 내린다",
+        "야수와 소통하는 사냥꾼으로, 동물들과 함께 전투에 나선다",
+        "차원을 넘나드는 마법사로, 공간을 왜곡시켜 적을 혼란에 빠뜨린다"
+    ];
+    
+    const randomIndex = Math.floor(Math.random() * conceptTemplates.length);
+    return conceptTemplates[randomIndex];
+}
+
+// 컨셉 자동 생성 버튼 이벤트
+function initializeConceptGeneration() {
+    // 새 히든 캐릭터 생성 모달의 컨셉 자동 생성 버튼
+    const generateBtn = document.getElementById('generate-concept-btn');
+    const conceptTextarea = document.getElementById('hidden-char-concept');
+    
+    if (generateBtn && conceptTextarea) {
+        generateBtn.addEventListener('click', async () => {
+            try {
+                generateBtn.disabled = true;
+                generateBtn.textContent = '생성 중...';
+                
+                const concept = await generateRandomConcept();
+                conceptTextarea.value = concept;
+                
+                // 약간의 지연 후 버튼 복원 (사용자 경험 향상)
+                setTimeout(() => {
+                    generateBtn.disabled = false;
+                    generateBtn.textContent = '🎲 컨셉 자동 생성';
+                }, 500);
+                
+            } catch (error) {
+                console.error('컨셉 생성 실패:', error);
+                generateBtn.disabled = false;
+                generateBtn.textContent = '🎲 컨셉 자동 생성';
+                alert('컨셉 생성에 실패했습니다.');
+            }
+        });
+    }
+    
+    // 히든 캐릭터 편집 모달의 컨셉 자동 생성 버튼
+    const editGenerateBtn = document.getElementById('edit-concept-generate-btn');
+    const editConceptTextarea = document.getElementById('edit-hidden-concept');
+    
+    if (editGenerateBtn && editConceptTextarea) {
+        editGenerateBtn.addEventListener('click', async () => {
+            try {
+                editGenerateBtn.disabled = true;
+                editGenerateBtn.textContent = '생성 중...';
+                
+                const concept = await generateRandomConcept();
+                editConceptTextarea.value = concept;
+                
+                // 약간의 지연 후 버튼 복원 (사용자 경험 향상)
+                setTimeout(() => {
+                    editGenerateBtn.disabled = false;
+                    editGenerateBtn.textContent = '컨셉 자동 생성';
+                }, 500);
+                
+            } catch (error) {
+                console.error('컨셉 생성 실패:', error);
+                editGenerateBtn.disabled = false;
+                editGenerateBtn.textContent = '컨셉 자동 생성';
+                alert('컨셉 생성에 실패했습니다.');
+            }
+        });
+    }
+}
+
+console.log('히든 캐릭터 시스템 로드 완료');
+
+// 컨셉 생성 초기화
+initializeConceptGeneration();

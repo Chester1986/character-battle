@@ -118,6 +118,15 @@
                     <button id="back-to-cards-from-admin-btn" class="back-btn">← 뒤로</button>
                     <h2>관리자 패널</h2>
                 </div>
+                
+                <!-- 관리자 탭 네비게이션 -->
+                <div class="admin-tabs">
+                    <button id="general-admin-tab" class="admin-tab active">일반 관리</button>
+                    <button id="hidden-character-tab" class="admin-tab">히든 캐릭터</button>
+                </div>
+                
+                <!-- 일반 관리 탭 -->
+                <div id="general-admin-content" class="admin-tab-content">
                 <div class="admin-controls">
                     <div class="admin-stats">
                         <div class="stat-item">
@@ -166,6 +175,60 @@
                     <h3>모든 캐릭터 관리</h3>
                     <div id="admin-characters-grid">
                         <!-- 관리자용 캐릭터 카드들이 여기에 표시됩니다 -->
+                    </div>
+                </div>
+                </div>
+                
+                <!-- 히든 캐릭터 관리 탭 -->
+                <div id="hidden-character-content" class="admin-tab-content hidden">
+                    <div class="hidden-character-header">
+                        <h3>✨ 히든 캐릭터 관리</h3>
+                        <p>특별한 확률로 등장하는 히든 캐릭터들을 관리합니다.</p>
+                    </div>
+                    
+                    <!-- 히든 캐릭터 생성 섹션 -->
+                    <div class="hidden-character-creation">
+                        <h4>새 히든 캐릭터 생성</h4>
+                        <form id="hidden-character-form">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="hidden-char-name">캐릭터 이름:</label>
+                                    <input type="text" id="hidden-char-name" placeholder="예: 전설의 드래곤 로드" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="hidden-char-concept">캐릭터 컨셉:</label>
+                                    <div class="concept-input-container">
+                                        <textarea id="hidden-char-concept" rows="3" placeholder="예: 고대부터 전해내려오는 전설의 드래곤을 다루는 마법사..." required></textarea>
+                                        <button type="button" id="generate-concept-btn" class="btn btn-secondary concept-generate-btn">🎲 컨셉 자동 생성</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="hidden-char-probability">매칭 확률 (%):</label>
+                                    <input type="number" id="hidden-char-probability" min="0.1" max="100" step="0.1" value="5" required>
+                                    <small>일반 매칭에서 이 캐릭터가 등장할 확률</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="hidden-char-reward">승리 시 루나 보상:</label>
+                                    <input type="number" id="hidden-char-reward" min="1" value="500" required>
+                                    <small>플레이어가 이 캐릭터를 이겼을 때 받을 루나</small>
+                                </div>
+                            </div>
+                            <button type="button" id="create-hidden-character-btn" class="btn btn-primary">히든 캐릭터 생성</button>
+                            <div id="hidden-loading-indicator" class="hidden">
+                                <div class="loading-text">히든 캐릭터를 생성하는 중...</div>
+                                <div class="loading-spinner"></div>
+                            </div>
+                        </form>
+                    </div>
+                    
+                    <!-- 기존 히든 캐릭터 목록 -->
+                    <div class="hidden-character-list">
+                        <h4>기존 히든 캐릭터 목록</h4>
+                        <div id="hidden-characters-grid">
+                            <!-- 히든 캐릭터 카드들이 여기에 표시됩니다 -->
+                        </div>
                     </div>
                 </div>
             </section>
@@ -537,6 +600,85 @@
             </div>
         </div>
     </footer>
+
+    <!-- 히든 캐릭터 편집 모달 -->
+    <div id="hidden-character-edit-modal" class="modal hidden">
+        <div class="modal-content hidden-character-edit-content">
+            <span class="close" id="hidden-character-edit-close">&times;</span>
+            <h3>히든 캐릭터 편집</h3>
+            
+            <div class="hidden-edit-tabs">
+                <button id="hidden-basic-tab" class="hidden-edit-tab active">기본 정보</button>
+                <button id="hidden-image-tab" class="hidden-edit-tab">이미지</button>
+                <button id="hidden-story-tab" class="hidden-edit-tab">스토리</button>
+                <button id="hidden-skills-tab" class="hidden-edit-tab">스킬</button>
+            </div>
+            
+            <!-- 기본 정보 탭 -->
+            <div id="hidden-basic-content" class="hidden-edit-tab-content">
+                <div class="form-group">
+                    <label for="edit-hidden-name">캐릭터 이름:</label>
+                    <input type="text" id="edit-hidden-name" required>
+                </div>
+                <div class="form-group">
+                    <label for="edit-hidden-concept">캐릭터 컨셉:</label>
+                    <div class="concept-input-container">
+                        <textarea id="edit-hidden-concept" rows="3" required></textarea>
+                        <button type="button" id="edit-concept-generate-btn" class="concept-generate-btn">컨셉 자동 생성</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="edit-hidden-probability">매칭 확률 (%):</label>
+                    <input type="number" id="edit-hidden-probability" min="0.1" max="100" step="0.1" required>
+                </div>
+                <div class="form-group">
+                    <label for="edit-hidden-reward">승리 시 루나 보상:</label>
+                    <input type="number" id="edit-hidden-reward" min="1" required>
+                </div>
+            </div>
+            
+            <!-- 이미지 탭 -->
+            <div id="hidden-image-content" class="hidden-edit-tab-content hidden">
+                <div class="current-image-section">
+                    <h4>현재 이미지</h4>
+                    <div class="current-image-container">
+                        <img id="current-hidden-image" src="" alt="현재 캐릭터 이미지">
+                    </div>
+                </div>
+                <div class="image-upload-section">
+                    <h4>새 이미지 업로드</h4>
+                    <input type="file" id="hidden-image-upload" accept="image/*">
+                    <button type="button" id="regenerate-hidden-image-btn" class="btn btn-secondary">AI로 이미지 재생성</button>
+                </div>
+            </div>
+            
+            <!-- 스토리 탭 -->
+            <div id="hidden-story-content" class="hidden-edit-tab-content hidden">
+                <div class="form-group">
+                    <label for="edit-hidden-background">배경 스토리:</label>
+                    <textarea id="edit-hidden-background" rows="5"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="edit-hidden-birth">탄생 스토리:</label>
+                    <textarea id="edit-hidden-birth" rows="5"></textarea>
+                </div>
+            </div>
+            
+            <!-- 스킬 탭 -->
+            <div id="hidden-skills-content" class="hidden-edit-tab-content hidden">
+                <div id="hidden-skills-list">
+                    <!-- 스킬 목록이 여기에 표시됩니다 -->
+                </div>
+                <button type="button" id="regenerate-hidden-skills-btn" class="btn btn-secondary">AI로 스킬 재생성</button>
+            </div>
+            
+            <div class="modal-actions">
+                <button type="button" id="save-hidden-character-btn" class="btn btn-primary">저장</button>
+                <button type="button" id="delete-hidden-character-btn" class="btn btn-danger">삭제</button>
+                <button type="button" id="cancel-hidden-edit-btn" class="btn btn-secondary">취소</button>
+            </div>
+        </div>
+    </div>
 
     <!-- 유튜브 모달 -->
     <div id="youtube-modal" class="modal hidden">

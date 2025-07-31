@@ -36,7 +36,7 @@ function generateUUID() {
 // Imagine Art API 호출 함수
 async function generateImageWithImagine(prompt, options = {}) {
     try {
-        const { style = 'realistic', aspect_ratio = '1:1', seed = '5' } = options;
+        const { style = 'ANIME_V2', aspect_ratio = '1:1', seed = '5' } = options;
         const formData = new FormData();
         formData.append('prompt', prompt);
         formData.append('style', style);
